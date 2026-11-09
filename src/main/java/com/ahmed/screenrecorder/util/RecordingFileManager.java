@@ -4,10 +4,13 @@ import com.ahmed.screenrecorder.ScreenRecorderClient;
 import com.ahmed.screenrecorder.config.RecordingConfig;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.util.Util;
+import org.jcodec.api.FrameGrab;
+import org.jcodec.common.DemuxerTrackMeta;
+import org.jcodec.common.io.NIOUtils;
+import org.jcodec.common.io.SeekableByteChannel;
+import org.jcodec.common.model.Size;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -15,7 +18,6 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 public class RecordingFileManager {
 
@@ -50,7 +52,7 @@ public class RecordingFileManager {
 
     public static boolean hasEnoughDiskSpace() {
         File dir = getRecordingsDir();
-        return dir.getUsableSpace() > 250L * 1024L * 1024L; // Minimum 250 MB free
+        return dir.getUsableSpace() > 250L * 1024L * 1024L;
     }
 
     public static void openRecordingsFolder() {
@@ -66,61 +68,44 @@ public class RecordingFileManager {
         Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
 
         for (File f : files) {
-            list.add(probeFile(f));
+            list.add(probeMp4WithJCodec(f));
         }
         return list;
     }
 
-    private static RecordingMetadata probeFile(File file) {
+    private static RecordingMetadata probeMp4WithJCodec(File file) {
         long sizeBytes = file.length();
         String sizeStr = String.format("%.2f MB", sizeBytes / (1024.0 * 1024.0));
-        String dateStr = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date(file.lastModified()));
-        String duration = "Unknown";
-        String resolution = "Unknown";
-        String fps = "Unknown";
+        String dateStr = new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date(file.lastModified()));
+        String duration = "00:00:00";
+        String resolution = "854x480";
+        String fps = "20 FPS";
 
-        // Attempt fast ffprobe metadata read if available
+        SeekableByteChannel ch = null;
         try {
-            ProcessBuilder pb = new ProcessBuilder(
-                    "ffprobe", "-v", "error", "-select_streams", "v:0",
-                    "-show_entries", "stream=width,height,r_frame_rate,duration",
-                    "-of", "default=noprint_wrappers=1:nokey=0",
-                    file.getAbsolutePath()
-            );
-            Process process = pb.start();
-            if (process.waitFor(400, TimeUnit.MILLISECONDS)) {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    String w = null, h = null;
-                    while ((line = reader.readLine()) != null) {
-                        if (line.startsWith("width=")) w = line.substring(6);
-                        else if (line.startsWith("height=")) h = line.substring(7);
-                        else if (line.startsWith("r_frame_rate=")) {
-                            String rate = line.substring(13);
-                            if (rate.contains("/")) {
-                                String[] parts = rate.split("/");
-                                double num = Double.parseDouble(parts[0]);
-                                double den = Double.parseDouble(parts[1]);
-                                if (den > 0) fps = String.format("%.0f FPS", num / den);
-                            }
-                        } else if (line.startsWith("duration=")) {
-                            String dur = line.substring(9);
-                            if (!dur.equals("N/A")) {
-                                double secs = Double.parseDouble(dur);
-                                int totalSec = (int) Math.round(secs);
-                                duration = String.format("%02d:%02d:%02d", totalSec / 3600, (totalSec % 3600) / 60, totalSec % 60);
-                            }
-                        }
-                    }
-                    if (w != null && h != null) {
-                        resolution = w + "x" + h;
-                    }
+            ch = NIOUtils.readableFileChannel(file.getAbsolutePath());
+            FrameGrab grab = FrameGrab.createFrameGrab(ch);
+            DemuxerTrackMeta meta = grab.getVideoTrack().getMeta();
+            if (meta != null) {
+                double durSec = meta.getTotalDuration();
+                int totalFrames = meta.getTotalFrames();
+                if (durSec <= 0 && totalFrames > 0) {
+                    durSec = totalFrames / 20.0;
                 }
-            } else {
-                process.destroyForcibly();
+                int sec = (int) Math.round(durSec);
+                duration = String.format("%02d:%02d:%02d", sec / 3600, (sec % 3600) / 60, sec % 60);
+
+                Size dim = meta.getDimensions();
+                if (dim != null && dim.getWidth() > 0) {
+                    resolution = dim.getWidth() + "x" + dim.getHeight();
+                }
+                if (durSec > 0 && totalFrames > 0) {
+                    fps = Math.round(totalFrames / durSec) + " FPS";
+                }
             }
         } catch (Exception ignored) {
-            // Fallback silently if ffprobe is not installed
+        } finally {
+            if (ch != null) NIOUtils.closeQuietly(ch);
         }
 
         return new RecordingMetadata(file, file.getName(), duration, resolution, fps, sizeStr, dateStr);
