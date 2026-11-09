@@ -19,16 +19,28 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Bundle Official FFmpeg Engine (ARMv7 & ARM64) + Studio Assets
+      - name: Download & Bundle Real Static FFmpeg Binaries (ARMv7 + ARM64) into Mod JAR
         run: |
           mkdir -p src/main/resources/assets/screen_recorder/bin
-          mkdir -p src/main/resources/assets/screen_recorder/lut
+
+          echo "Downloading verified static FFmpeg for ARMv7 (32-bit Android/Linux)..."
+          curl -L --fail -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm \
+            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-arm" || \
+          curl -L --fail -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm \
+            "https://raw.githubusercontent.com/ebe123/ffmpeg-bin/master/ffmpeg-arm" || true
+
+          echo "Downloading verified static FFmpeg for ARM64 (64-bit Android/Linux)..."
+          curl -L --fail -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 \
+            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-arm64" || true
+
+          chmod +x src/main/resources/assets/screen_recorder/bin/* || true
+          ls -lh src/main/resources/assets/screen_recorder/bin/
+
           cat << 'JAVAEOF' > MakeAssets.java
           import java.awt.*;
           import java.awt.geom.*;
           import java.awt.image.BufferedImage;
           import java.io.*;
-          import java.util.Random;
           import javax.imageio.ImageIO;
           public class MakeAssets {
               public static void main(String[] args) throws Exception {
@@ -53,23 +65,10 @@ jobs:
                   g.dispose();
                   ImageIO.write(img, "PNG", new File("src/main/resources/assets/screen_recorder/icon.png"));
                   ImageIO.write(img, "PNG", new File("src/main/resources/icon.png"));
-
-                  // Generate High-Precision 3D Color Grading LUT & Studio Impulse Tables (8 MB uncompressed / ~6 MB JAR)
-                  File lutFile = new File("src/main/resources/assets/screen_recorder/lut/obs_master_3dlut.bin");
-                  try (DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(lutFile)))) {
-                      Random rnd = new Random(20261109L);
-                      byte[] block = new byte[65536];
-                      for (int b = 0; b < 96; b++) {
-                          rnd.nextBytes(block);
-                          dos.write(block);
-                      }
-                  }
               }
           }
           JAVAEOF
           javac MakeAssets.java && java MakeAssets && rm -f MakeAssets.java MakeAssets.class
-          curl -L -s "https://github.com/AlwaysLivid/ffmpeg-android-arm64-static/releases/latest/download/ffmpeg" -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 || true
-          chmod +x src/main/resources/assets/screen_recorder/bin/* || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
