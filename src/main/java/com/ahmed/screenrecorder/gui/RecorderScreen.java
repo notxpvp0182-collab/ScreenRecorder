@@ -340,6 +340,8 @@ public class RecorderScreen extends Screen {
                     else if (sName.contains("Mic")) { enabled = cfg.microphoneEnabled; ic = UIHelper.Icon.MICROPHONE; }
                     int col = enabled ? 0xFFFFFFFF : 0xFF6C707E;
                     UIHelper.drawIcon(context, ic, dx + 4, sy + 2, col);
+                    UIHelper.drawIcon(context, UIHelper.Icon.EYE, dx + dw - 20, sy + 2, col);
+                    UIHelper.drawIcon(context, UIHelper.Icon.LOCK, dx + dw - 10, sy + 2, 0xFF9AA0A6);
                     context.drawTextWithShadow(this.textRenderer, truncate(sName, 11), dx + 14, sy + 2, col);
                 }
                 drawDockMiniToolbar(context, dx + 2, dockY + dockAreaH - 12, dw - 4);

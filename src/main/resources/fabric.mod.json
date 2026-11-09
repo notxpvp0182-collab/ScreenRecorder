@@ -3,11 +3,11 @@
   "id": "obs",
   "version": "${version}",
   "name": "OBS",
-  "icon": "assets/screen_recorder/icon.png",
-  "description": "OBS Studio In-Game Screen Recorder "description": "A professional in-game Minecraft screen recorder." Video Player",
+  "description": "OBS Studio In-Game Screen Recorder and Media Player.",
   "authors": [
     "Ahmed"
   ],
+  "icon": "assets/screen_recorder/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": [

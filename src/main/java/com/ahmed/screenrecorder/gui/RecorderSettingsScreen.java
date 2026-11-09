@@ -70,8 +70,8 @@ public class RecorderSettingsScreen extends Screen {
     protected void init() {
         RecordingConfig cfg = RecordingConfig.get();
 
-        int winW = Math.min(420, this.width - 12);
-        int winH = Math.min(250, this.height - 12);
+        int winW = Math.min(500, Math.max(320, (int) (this.width * 0.88f)));
+        int winH = Math.min(285, Math.max(195, (int) (this.height * 0.86f)));
         int wx = (this.width - winW) / 2;
         int wy = (this.height - winH) / 2;
 
@@ -330,8 +330,8 @@ public class RecorderSettingsScreen extends Screen {
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         context.fill(0, 0, this.width, this.height, 0xB3090A0D);
 
-        int winW = Math.min(420, this.width - 12);
-        int winH = Math.min(250, this.height - 12);
+        int winW = Math.min(500, Math.max(320, (int) (this.width * 0.88f)));
+        int winH = Math.min(285, Math.max(195, (int) (this.height * 0.86f)));
         int wx = (this.width - winW) / 2;
         int wy = (this.height - winH) / 2;
         int sidebarW = Math.min(100, Math.max(76, winW / 4));

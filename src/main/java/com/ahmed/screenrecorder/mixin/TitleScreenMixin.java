@@ -1,6 +1,6 @@
 package com.ahmed.screenrecorder.mixin;
 
-import com.ahmed.screenrecorder.gui.RecorderScreen;
+import com.ahmed.screenrecorder.gui.RecordingsScreen;
 import com.ahmed.screenrecorder.gui.UIHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -27,7 +27,7 @@ public abstract class TitleScreenMixin extends Screen {
         // Default Minecraft 20x20 square button with custom OBS icon rendered on top
         ButtonWidget obsBtn = ButtonWidget.builder(Text.empty(), button -> {
             if (this.client != null) {
-                this.client.setScreen(new RecorderScreen(this));
+                this.client.setScreen(new RecordingsScreen(this));
             }
         }).dimensions(btnX, btnY, 20, 20).build();
 
@@ -38,6 +38,6 @@ public abstract class TitleScreenMixin extends Screen {
     private void renderObsIconOnDefaultButton(DrawContext context, int mouseX, int mouseY, float delta, CallbackInfo ci) {
         int btnX = this.width / 2 + 104;
         int btnY = this.height / 4 + 48;
-        UIHelper.drawIcon(context, UIHelper.Icon.RECORD, btnX + 6, btnY + 6, 0xFFFFFFFF);
+        UIHelper.drawIcon(context, UIHelper.Icon.FOLDER, btnX + 6, btnY + 6, 0xFFFFFFFF);
     }
 }

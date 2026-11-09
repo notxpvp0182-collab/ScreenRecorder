@@ -28,7 +28,9 @@ public class UIHelper {
         PLUS,
         MINUS,
         UP,
-        DOWN
+        DOWN,
+        EYE,
+        LOCK
     }
 
     public static void drawBorder(DrawContext context, int x, int y, int width, int height, int color) {
@@ -151,7 +153,9 @@ public class UIHelper {
                 ctx.fill(x + 2, y + 3, x + 6, y + 4, color);
                 ctx.fill(x + 1, y + 4, x + 7, y + 6, color);
             }
-            case DOWN -> {
+            case DOWN,
+        EYE,
+        LOCK -> {
                 ctx.fill(x + 1, y + 2, x + 7, y + 4, color);
                 ctx.fill(x + 2, y + 4, x + 6, y + 5, color);
                 ctx.fill(x + 3, y + 5, x + 5, y + 6, color);
