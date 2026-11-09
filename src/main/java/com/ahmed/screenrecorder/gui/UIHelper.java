@@ -3,8 +3,7 @@ package com.ahmed.screenrecorder.gui;
 import net.minecraft.client.gui.DrawContext;
 
 /**
- * Renders crisp, pixel-perfect custom studio icons and borders directly via DrawContext.
- * Zero unicode emojis used.
+ * High-Precision Custom Studio Icon Renderer (Zero Emojis, Zero Lag).
  */
 public class UIHelper {
 
@@ -40,26 +39,24 @@ public class UIHelper {
         context.fill(x + width - 1, y + 1, x + width, y + height - 1, color);
     }
 
-    /**
-     * Draws a crisp 8x8 custom vector-style icon at (x, y).
-     */
     public static void drawIcon(DrawContext ctx, Icon icon, int x, int y, int color) {
         if (icon == null || icon == Icon.NONE) return;
 
         switch (icon) {
             case RECORD -> {
-                // Crisp circular recording indicator with inner highlight
-                ctx.fill(x + 2, y + 1, x + 6, y + 7, 0xFFE53935);
-                ctx.fill(x + 1, y + 2, x + 7, y + 6, 0xFFE53935);
-                ctx.fill(x + 2, y + 2, x + 4, y + 4, 0xFFFF8A80);
+                ctx.fill(x + 1, y + 1, x + 7, y + 7, 0xFF8E1616);
+                ctx.fill(x + 2, y + 1, x + 6, y + 7, 0xFFFF2A2A);
+                ctx.fill(x + 1, y + 2, x + 7, y + 6, 0xFFFF2A2A);
+                ctx.fill(x + 2, y + 2, x + 4, y + 4, 0xFFFF9E9E);
             }
             case STOP -> {
-                ctx.fill(x + 1, y + 1, x + 7, y + 7, color);
+                ctx.fill(x + 1, y + 1, x + 7, y + 7, 0xFFFF4444);
+                ctx.fill(x + 2, y + 2, x + 6, y + 6, color);
             }
             case PLAY -> {
-                ctx.fill(x + 2, y + 1, x + 3, y + 7, color);
-                ctx.fill(x + 3, y + 2, x + 5, y + 6, color);
-                ctx.fill(x + 5, y + 3, x + 7, y + 5, color);
+                ctx.fill(x + 2, y + 1, x + 4, y + 7, color);
+                ctx.fill(x + 4, y + 2, x + 6, y + 6, color);
+                ctx.fill(x + 6, y + 3, x + 7, y + 5, color);
             }
             case PAUSE -> {
                 ctx.fill(x + 1, y + 1, x + 3, y + 7, color);
@@ -71,59 +68,53 @@ public class UIHelper {
                 ctx.fill(x + 5, y + 2, x + 7, y + 6, color);
             }
             case FOLDER -> {
-                // Tabbed studio folder icon
-                ctx.fill(x, y + 1, x + 3, y + 2, 0xFFE53935);
-                ctx.fill(x, y + 2, x + 8, y + 7, color);
-                ctx.fill(x + 1, y + 3, x + 7, y + 6, 0xFF1A1C22);
+                ctx.fill(x, y + 1, x + 4, y + 2, 0xFF60A5FA);
+                ctx.fill(x, y + 2, x + 8, y + 7, 0xFF3B82F6);
+                ctx.fill(x + 1, y + 3, x + 7, y + 6, color);
             }
             case SETTINGS -> {
-                // Precision gear cog icon
                 ctx.fill(x + 3, y, x + 5, y + 8, color);
                 ctx.fill(x, y + 3, x + 8, y + 5, color);
                 ctx.fill(x + 1, y + 1, x + 7, y + 7, color);
-                ctx.fill(x + 3, y + 3, x + 5, y + 5, 0xFF16181E);
+                ctx.fill(x + 2, y + 2, x + 6, y + 6, 0xFF1F2229);
+                ctx.fill(x + 3, y + 3, x + 5, y + 5, 0xFF60A5FA);
             }
             case MICROPHONE -> {
-                // Studio condenser microphone icon
-                ctx.fill(x + 3, y, x + 5, y + 4, color);
-                ctx.fill(x + 1, y + 3, x + 2, y + 5, color);
-                ctx.fill(x + 6, y + 3, x + 7, y + 5, color);
-                ctx.fill(x + 2, y + 5, x + 6, y + 6, color);
-                ctx.fill(x + 3, y + 6, x + 5, y + 7, color);
-                ctx.fill(x + 2, y + 7, x + 6, y + 8, color);
+                ctx.fill(x + 3, y, x + 5, y + 5, color);
+                ctx.fill(x + 1, y + 3, x + 2, y + 6, 0xFF60A5FA);
+                ctx.fill(x + 6, y + 3, x + 7, y + 6, 0xFF60A5FA);
+                ctx.fill(x + 2, y + 5, x + 6, y + 6, 0xFF60A5FA);
+                ctx.fill(x + 3, y + 6, x + 5, y + 8, color);
             }
             case AUDIO -> {
-                // Speaker cone + sound waves
-                ctx.fill(x + 1, y + 3, x + 3, y + 5, color);
-                ctx.fill(x + 3, y + 2, x + 4, y + 6, color);
-                ctx.fill(x + 4, y + 1, x + 5, y + 7, color);
-                ctx.fill(x + 6, y + 2, x + 7, y + 3, 0xFFE53935);
-                ctx.fill(x + 6, y + 5, x + 7, y + 6, 0xFFE53935);
+                ctx.fill(x, y + 3, x + 2, y + 5, color);
+                ctx.fill(x + 2, y + 2, x + 3, y + 6, color);
+                ctx.fill(x + 3, y + 1, x + 4, y + 7, color);
+                ctx.fill(x + 5, y + 2, x + 6, y + 3, 0xFF2ECC71);
+                ctx.fill(x + 5, y + 5, x + 6, y + 6, 0xFF2ECC71);
+                ctx.fill(x + 7, y + 1, x + 8, y + 7, 0xFF3B82F6);
             }
             case VIDEO -> {
-                // Camera / Film frame icon
-                ctx.fill(x, y + 1, x + 6, y + 7, color);
-                ctx.fill(x + 1, y + 2, x + 5, y + 6, 0xFF16181E);
+                ctx.fill(x, y + 1, x + 6, y + 7, 0xFF3B82F6);
+                ctx.fill(x + 1, y + 2, x + 5, y + 6, color);
                 ctx.fill(x + 6, y + 3, x + 7, y + 5, color);
                 ctx.fill(x + 7, y + 2, x + 8, y + 6, color);
             }
             case FILTERS -> {
-                // 3-band EQ slider icon
-                ctx.fill(x + 1, y + 1, x + 7, y + 2, color);
-                ctx.fill(x + 5, y, x + 6, y + 3, 0xFFE53935);
-                ctx.fill(x + 1, y + 4, x + 7, y + 5, color);
-                ctx.fill(x + 2, y + 3, x + 3, y + 6, 0xFFE53935);
-                ctx.fill(x + 1, y + 6, x + 7, y + 7, color);
-                ctx.fill(x + 4, y + 5, x + 5, y + 8, 0xFFE53935);
+                ctx.fill(x, y + 1, x + 8, y + 2, color);
+                ctx.fill(x + 5, y, x + 7, y + 3, 0xFF3B82F6);
+                ctx.fill(x, y + 4, x + 8, y + 5, color);
+                ctx.fill(x + 2, y + 3, x + 4, y + 6, 0xFF2ECC71);
+                ctx.fill(x, y + 6, x + 8, y + 7, color);
+                ctx.fill(x + 4, y + 5, x + 6, y + 8, 0xFFF1C40F);
             }
             case PERFORMANCE -> {
-                // High-voltage bolt icon
                 ctx.fill(x + 4, y, x + 6, y + 3, 0xFFFFCA28);
                 ctx.fill(x + 2, y + 3, x + 6, y + 5, 0xFFFFCA28);
                 ctx.fill(x + 2, y + 5, x + 4, y + 8, 0xFFFFCA28);
             }
             case DELETE -> {
-                ctx.fill(x + 2, y, x + 6, y + 1, color);
+                ctx.fill(x + 2, y, x + 6, y + 1, 0xFFFF5252);
                 ctx.fill(x + 1, y + 1, x + 7, y + 2, color);
                 ctx.fill(x + 2, y + 3, x + 6, y + 8, color);
             }
@@ -132,12 +123,12 @@ public class UIHelper {
                 ctx.fill(x + 1, y + 2, x + 2, y + 6, color);
                 ctx.fill(x + 2, y + 6, x + 6, y + 7, color);
                 ctx.fill(x + 6, y + 3, x + 7, y + 6, color);
-                ctx.fill(x + 5, y, x + 7, y + 3, color);
+                ctx.fill(x + 5, y, x + 7, y + 3, 0xFF3B82F6);
             }
             case CLOSE -> {
                 ctx.fill(x + 1, y + 1, x + 3, y + 3, color);
                 ctx.fill(x + 5, y + 1, x + 7, y + 3, color);
-                ctx.fill(x + 3, y + 3, x + 5, y + 5, color);
+                ctx.fill(x + 3, y + 3, x + 5, y + 5, 0xFFFF5252);
                 ctx.fill(x + 1, y + 5, x + 3, y + 7, color);
                 ctx.fill(x + 5, y + 5, x + 7, y + 7, color);
             }
@@ -153,14 +144,21 @@ public class UIHelper {
                 ctx.fill(x + 2, y + 3, x + 6, y + 4, color);
                 ctx.fill(x + 1, y + 4, x + 7, y + 6, color);
             }
-            case DOWN,
-        EYE,
-        LOCK -> {
+            case DOWN -> {
                 ctx.fill(x + 1, y + 2, x + 7, y + 4, color);
                 ctx.fill(x + 2, y + 4, x + 6, y + 5, color);
                 ctx.fill(x + 3, y + 5, x + 5, y + 6, color);
             }
-            default -> {}
+            case EYE -> {
+                ctx.fill(x + 2, y + 2, x + 6, y + 6, color);
+                ctx.fill(x + 1, y + 3, x + 7, y + 5, color);
+                ctx.fill(x + 3, y + 3, x + 5, y + 5, 0xFF3B82F6);
+            }
+            case LOCK -> {
+                ctx.fill(x + 2, y + 1, x + 6, y + 3, color);
+                ctx.fill(x + 1, y + 3, x + 7, y + 7, color);
+                ctx.fill(x + 3, y + 4, x + 5, y + 6, 0xFF16181E);
+            }
         }
     }
 }

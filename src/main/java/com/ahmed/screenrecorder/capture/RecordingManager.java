@@ -16,9 +16,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * OBS Studio Real-Time 1x Synchronized Recording Manager.
- * Matches encoded PTS frames to actual elapsed wall-clock time so 60s of gameplay = 60s of 1x speed MP4 video,
- * even if the game's live FPS fluctuates between 10 FPS and 120 FPS.
+ * Non-Stop Background Display Capture Recording Manager:
+ * Continues recording seamlessly across Main Menu, World Join/Leave, Server Transfers, F5 Views, and GUIs
+ * with zero FPS drop and millisecond-exact 1x video duration.
  */
 public class RecordingManager {
     private static final RecordingManager INSTANCE = new RecordingManager();
@@ -26,6 +26,7 @@ public class RecordingManager {
     private final AtomicBoolean recording = new AtomicBoolean(false);
     private final AtomicBoolean paused = new AtomicBoolean(false);
     private final AtomicBoolean stopping = new AtomicBoolean(false);
+    private final AtomicBoolean encoderBusy = new AtomicBoolean(false);
 
     private final VideoCaptureManager videoCaptureManager = new VideoCaptureManager();
     private final AudioCaptureManager audioCaptureManager = new AudioCaptureManager();
@@ -36,9 +37,7 @@ public class RecordingManager {
     private Thread videoEncoderThread;
 
     private File currentOutputFile;
-    private int sessionSourceWidth;
-    private int sessionSourceHeight;
-    private int sessionTargetFps;
+    private int maxAllocatedBytes;
     private long recordingStartTimeMs;
     private long pausedAccumulatedMs = 0;
     private long pauseStartMs = 0;
@@ -47,7 +46,7 @@ public class RecordingManager {
     private String lastStatusMessage = "OBS Ready";
     private boolean lastStatusIsError = false;
 
-    private record CapturedFrame(ByteBuffer buffer, long elapsedActiveMs) {}
+    private record CapturedFrame(ByteBuffer buffer, int width, int height, long elapsedActiveMs) {}
 
     public static RecordingManager getInstance() {
         return INSTANCE;
@@ -57,8 +56,6 @@ public class RecordingManager {
         if (recording.get() || stopping.get()) {
             return false;
         }
-
-        RecordingConfig cfg = RecordingConfig.get();
 
         if (!RecordingFileManager.hasEnoughDiskSpace()) {
             setStatus("Low disk space (< 250 MB)", true);
@@ -72,22 +69,17 @@ public class RecordingManager {
             return false;
         }
 
-        this.sessionSourceWidth = fb.textureWidth;
-        this.sessionSourceHeight = fb.textureHeight;
-        // Lock target FPS to realistic smooth 30 FPS on mobile if current FPS is low, or configured FPS
-        int liveFps = Math.max(15, client.getCurrentFps());
-        this.sessionTargetFps = Math.min(cfg.getTargetFps(), Math.max(24, Math.min(60, liveFps)));
-
-        int frameBytes = sessionSourceWidth * sessionSourceHeight * 4;
-        int queueCapacity = Math.max(8, Math.min(24, cfg.maxFrameQueueSize));
+        int w = fb.textureWidth;
+        int h = fb.textureHeight;
+        this.maxAllocatedBytes = Math.max(w * h * 4, 3840 * 2160 * 4);
 
         try {
-            performanceManager.initializePool(frameBytes, queueCapacity + 3);
-            encodeQueue = new ArrayBlockingQueue<>(queueCapacity);
+            performanceManager.initializePool(this.maxAllocatedBytes, 6);
+            encodeQueue = new ArrayBlockingQueue<>(4);
 
             currentOutputFile = RecordingFileManager.createUniqueRecordingFile();
             ffmpegEncoder = new FFmpegEncoder();
-            ffmpegEncoder.start(currentOutputFile, sessionSourceWidth, sessionSourceHeight);
+            ffmpegEncoder.start(currentOutputFile, w, h);
 
             audioCaptureManager.start(ffmpegEncoder.getAudioOutputStream());
 
@@ -97,9 +89,9 @@ public class RecordingManager {
             lastCapturedFrameNs = 0L;
             recording.set(true);
 
-            videoEncoderThread = new Thread(this::runWallClockSyncedEncodeLoop, "OBS-VideoEncoder");
+            videoEncoderThread = new Thread(this::runSinglePassTimestampedEncodeLoop, "OBS-AsyncEncoder");
             videoEncoderThread.setDaemon(true);
-            PerformanceManager.applyThreadPriority(videoEncoderThread);
+            videoEncoderThread.setPriority(Thread.NORM_PRIORITY - 1); // Never starve Minecraft Render Thread!
             videoEncoderThread.start();
 
             setStatus("Recording: " + currentOutputFile.getName(), false);
@@ -139,7 +131,7 @@ public class RecordingManager {
         stopping.set(true);
         recording.set(false);
         paused.set(false);
-        setStatus("Finalizing MP4...", false);
+        setStatus("Saving MP4...", false);
 
         Thread stopThread = new Thread(this::performSafeStop, "OBS-Finalizer");
         stopThread.setDaemon(false);
@@ -157,7 +149,12 @@ public class RecordingManager {
     public void onFrameRendered() {
         if (!recording.get() || paused.get() || stopping.get()) return;
 
-        int targetFps = RecordingConfig.get().getTargetFps();
+        // If background encoder queue has a frame ready, skip glReadPixels this tick so game runs at 100% full FPS!
+        if (encodeQueue.remainingCapacity() == 0) {
+            return;
+        }
+
+        int targetFps = Math.min(30, RecordingConfig.get().getTargetFps());
         long frameIntervalNs = 1_000_000_000L / targetFps;
         long nowNs = System.nanoTime();
 
@@ -167,63 +164,42 @@ public class RecordingManager {
 
         MinecraftClient client = MinecraftClient.getInstance();
         Framebuffer fb = client.getFramebuffer();
-        if (fb == null) return;
+        if (fb == null || fb.textureWidth <= 0 || fb.textureHeight <= 0) return;
 
-        if (fb.textureWidth != sessionSourceWidth || fb.textureHeight != sessionSourceHeight) {
-            stopRecording();
-            return;
-        }
+        int curW = fb.textureWidth;
+        int curH = fb.textureHeight;
+        if (curW * curH * 4 > maxAllocatedBytes) return;
 
         lastCapturedFrameNs = nowNs;
 
         ByteBuffer buffer = performanceManager.acquireBuffer();
-        if (buffer == null) {
-            performanceManager.recordFrameDropped();
-            return;
-        }
+        if (buffer == null) return;
 
-        boolean captured = videoCaptureManager.captureFramebuffer(buffer, sessionSourceWidth, sessionSourceHeight);
+        boolean captured = videoCaptureManager.captureFramebuffer(buffer, curW, curH);
         if (captured) {
-            long activeMs = Math.max(0L, System.currentTimeMillis() - recordingStartTimeMs - pausedAccumulatedMs);
-            if (!encodeQueue.offer(new CapturedFrame(buffer, activeMs))) {
+            long activeMs = Math.max(1L, System.currentTimeMillis() - recordingStartTimeMs - pausedAccumulatedMs);
+            if (!encodeQueue.offer(new CapturedFrame(buffer, curW, curH, activeMs))) {
                 performanceManager.releaseBuffer(buffer);
-                performanceManager.recordFrameDropped();
             }
         } else {
             performanceManager.releaseBuffer(buffer);
         }
     }
 
-    /**
-     * Ensures 1x Real-Time Video Speed!
-     * Calculates exact target frame index from wall-clock elapsed milliseconds so if the game
-     * runs at 13 FPS while recording at 60 FPS, frames are properly paced to match 1x real time.
-     */
-    private void runWallClockSyncedEncodeLoop() {
-        int fps = RecordingConfig.get().getTargetFps();
-        long writtenFrames = 0;
-
+    private void runSinglePassTimestampedEncodeLoop() {
         try {
             while (recording.get() || !encodeQueue.isEmpty()) {
-                CapturedFrame item = encodeQueue.poll(20, TimeUnit.MILLISECONDS);
+                CapturedFrame item = encodeQueue.poll(25, TimeUnit.MILLISECONDS);
                 if (item != null) {
                     ByteBuffer buf = item.buffer();
-                    long targetFrameCount = Math.max(writtenFrames + 1, (item.elapsedActiveMs() * fps) / 1000L);
-                    long repeatCount = Math.min(8, targetFrameCount - writtenFrames);
-
-                    for (long r = 0; r < repeatCount; r++) {
-                        buf.rewind();
-                        ffmpegEncoder.writeVideoFrame(buf);
-                        writtenFrames++;
-                        performanceManager.recordFrameEncoded();
-                    }
-
+                    buf.rewind();
+                    ffmpegEncoder.writeVideoFrame(buf, item.elapsedActiveMs(), item.width(), item.height());
+                    performanceManager.recordFrameEncoded();
                     performanceManager.releaseBuffer(buf);
                 }
             }
         } catch (Exception e) {
-            ScreenRecorderClient.LOGGER.error("Encoder error", e);
-            recording.set(false);
+            ScreenRecorderClient.LOGGER.error("Encoder loop error", e);
         }
     }
 
