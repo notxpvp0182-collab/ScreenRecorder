@@ -2,12 +2,10 @@ package com.ahmed.screenrecorder.gui;
 
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.texture.NativeImageBackedTexture;
-import net.minecraft.client.render.RenderLayer;
 import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.RandomAccessFile;
@@ -15,7 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * In-Game MP4 Video Player Screen with Play/Pause, Seek Restart, and Responsive 16:9 Viewport.
+ * Universal In-Game MP4 Video Player Screen with Custom Vector Icons and Direct Scanline Renderer.
  */
 public class VideoPlayerScreen extends Screen {
     private final Screen parent;
@@ -28,8 +26,11 @@ public class VideoPlayerScreen extends Screen {
     private boolean playing = true;
     private long lastFrameTimeMs = 0;
 
-    private NativeImageBackedTexture frameTexture;
-    private Identifier frameTextureId;
+    private static final int GRID_W = 160;
+    private static final int GRID_H = 90;
+    private final int[] frameGrid = new int[GRID_W * GRID_H];
+    private boolean hasFrameLoaded = false;
+
     private ThemeButton playPauseBtn;
 
     public VideoPlayerScreen(Screen parent, File videoFile) {
@@ -51,11 +52,8 @@ public class VideoPlayerScreen extends Screen {
                 int magic = raf.readInt();
                 if (magic == 0x53524D50 && fps > 0 && fps <= 240) {
                     this.videoFps = fps;
-                    raf.seek(len - 20);
-                    // Read index count stored before footer
                 }
             }
-            // Scan JPEG SOI/EOI markers inside MP4 mdat for universal playback
             raf.seek(0);
             byte[] data = new byte[(int) Math.min(len, 64 * 1024 * 1024)];
             raf.readFully(data);
@@ -84,22 +82,35 @@ public class VideoPlayerScreen extends Screen {
     @Override
     protected void init() {
         int cx = this.width / 2;
-        int by = this.height - 28;
+        int by = this.height - 26;
 
-        playPauseBtn = new ThemeButton(cx - 135, by, 85, 20, Text.literal(playing ? "⏸ PAUSE" : "▶ PLAY"), () -> {
-            playing = !playing;
-            playPauseBtn.setMessage(Text.literal(playing ? "⏸ PAUSE" : "▶ PLAY"));
-        }, true);
+        playPauseBtn = new ThemeButton(cx - 135, by, 85, 20,
+                playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY,
+                Text.literal(playing ? "PAUSE" : "PLAY"),
+                () -> {
+                    playing = !playing;
+                    playPauseBtn.setIcon(playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY);
+                    playPauseBtn.setMessage(Text.literal(playing ? "PAUSE" : "PLAY"));
+                },
+                true
+        );
         this.addDrawableChild(playPauseBtn);
 
-        this.addDrawableChild(new ThemeButton(cx - 45, by, 85, 20, Text.literal("⏮ RESTART"), () -> {
-            currentFrame = 0;
-            playing = true;
-            playPauseBtn.setMessage(Text.literal("⏸ PAUSE"));
-            decodeCurrentFrame();
-        }));
+        this.addDrawableChild(new ThemeButton(cx - 45, by, 85, 20,
+                UIHelper.Icon.RESTART, Text.literal("RESTART"),
+                () -> {
+                    currentFrame = 0;
+                    playing = true;
+                    playPauseBtn.setIcon(UIHelper.Icon.PAUSE);
+                    playPauseBtn.setMessage(Text.literal("PAUSE"));
+                    decodeCurrentFrame();
+                }
+        ));
 
-        this.addDrawableChild(new ThemeButton(cx + 45, by, 90, 20, Text.literal("X CLOSE"), this::close));
+        this.addDrawableChild(new ThemeButton(cx + 45, by, 90, 20,
+                UIHelper.Icon.CLOSE, Text.literal("CLOSE"),
+                this::close
+        ));
 
         decodeCurrentFrame();
     }
@@ -113,13 +124,19 @@ public class VideoPlayerScreen extends Screen {
             raf.seek(offset);
             raf.readFully(buf);
 
-            NativeImage img = NativeImage.read(new ByteArrayInputStream(buf));
-            if (frameTexture != null) {
-                frameTexture.close();
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(buf));
+            if (img != null) {
+                int iw = img.getWidth();
+                int ih = img.getHeight();
+                for (int gy = 0; gy < GRID_H; gy++) {
+                    int sy = (gy * ih) / GRID_H;
+                    for (int gx = 0; gx < GRID_W; gx++) {
+                        int sx = (gx * iw) / GRID_W;
+                        frameGrid[gy * GRID_W + gx] = 0xFF000000 | (img.getRGB(sx, sy) & 0x00FFFFFF);
+                    }
+                }
+                hasFrameLoaded = true;
             }
-            frameTexture = new NativeImageBackedTexture(img);
-            frameTextureId = Identifier.of("screen_recorder", "video_preview_frame");
-            this.client.getTextureManager().registerTexture(frameTextureId, frameTexture);
         } catch (Exception ignored) {}
     }
 
@@ -127,11 +144,9 @@ public class VideoPlayerScreen extends Screen {
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         context.fill(0, 0, this.width, this.height, 0xFF131418);
 
-        // Top Bar
-        context.fill(0, 0, this.width, 22, 0xFF1D1F26);
-        context.drawCenteredTextWithShadow(this.textRenderer, "▶ IN-GAME MP4 PLAYER — " + videoFile.getName(), this.width / 2, 7, 0xFFFFFFFF);
+        context.fill(0, 0, this.width, 20, 0xFF1D1F26);
+        context.drawCenteredTextWithShadow(this.textRenderer, "IN-GAME MP4 PLAYER — " + videoFile.getName(), this.width / 2, 6, 0xFFFFFFFF);
 
-        // Advance frame according to FPS
         long now = System.currentTimeMillis();
         long interval = 1000L / Math.max(10, videoFps);
         if (playing && !frameOffsets.isEmpty() && now - lastFrameTimeMs >= interval) {
@@ -140,14 +155,16 @@ public class VideoPlayerScreen extends Screen {
             if (currentFrame >= frameOffsets.size()) {
                 currentFrame = 0;
                 playing = false;
-                if (playPauseBtn != null) playPauseBtn.setMessage(Text.literal("▶ PLAY"));
+                if (playPauseBtn != null) {
+                    playPauseBtn.setIcon(UIHelper.Icon.PLAY);
+                    playPauseBtn.setMessage(Text.literal("PLAY"));
+                }
             }
             decodeCurrentFrame();
         }
 
-        // Responsive 16:9 Viewport Area
-        int availW = this.width - 40;
-        int availH = this.height - 68;
+        int availW = this.width - 36;
+        int availH = this.height - 62;
         int viewW = availW;
         int viewH = (viewW * 9) / 16;
         if (viewH > availH) {
@@ -155,21 +172,28 @@ public class VideoPlayerScreen extends Screen {
             viewW = (viewH * 16) / 9;
         }
         int vx = (this.width - viewW) / 2;
-        int vy = 26 + (availH - viewH) / 2;
+        int vy = 24 + (availH - viewH) / 2;
 
         context.fill(vx - 2, vy - 2, vx + viewW + 2, vy + viewH + 2, 0xFF000000);
         UIHelper.drawBorder(context, vx - 2, vy - 2, viewW + 4, viewH + 4, 0xFF3A3D4A);
 
-        if (frameTextureId != null && frameTexture != null && frameTexture.getImage() != null) {
-            int tw = frameTexture.getImage().getWidth();
-            int th = frameTexture.getImage().getHeight();
-            context.drawTexture(RenderLayer::getGuiTextured, frameTextureId, vx, vy, 0.0f, 0.0f, viewW, viewH, tw, th, tw, th);
+        if (hasFrameLoaded) {
+            for (int gy = 0; gy < GRID_H; gy++) {
+                int py0 = vy + (gy * viewH) / GRID_H;
+                int py1 = vy + ((gy + 1) * viewH) / GRID_H;
+                if (py1 <= py0) py1 = py0 + 1;
+                for (int gx = 0; gx < GRID_W; gx++) {
+                    int px0 = vx + (gx * viewW) / GRID_W;
+                    int px1 = vx + ((gx + 1) * viewW) / GRID_W;
+                    if (px1 <= px0) px1 = px0 + 1;
+                    context.fill(px0, py0, px1, py1, frameGrid[gy * GRID_W + gx]);
+                }
+            }
         } else {
             context.drawCenteredTextWithShadow(this.textRenderer, "No decodable frames in file.", this.width / 2, vy + viewH / 2, 0xFFAAAAAA);
         }
 
-        // Progress Bar
-        int barY = this.height - 36;
+        int barY = this.height - 34;
         context.fill(vx, barY, vx + viewW, barY + 4, 0xFF2B2E38);
         if (!frameOffsets.isEmpty()) {
             int progW = (int) (((currentFrame + 1) / (float) frameOffsets.size()) * viewW);
@@ -183,7 +207,6 @@ public class VideoPlayerScreen extends Screen {
     public void close() {
         try {
             if (raf != null) raf.close();
-            if (frameTexture != null) frameTexture.close();
         } catch (Exception ignored) {}
         this.client.setScreen(parent);
     }

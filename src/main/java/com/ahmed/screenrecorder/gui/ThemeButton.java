@@ -11,16 +11,30 @@ import net.minecraft.text.Text;
 public class ThemeButton extends ClickableWidget {
     private final Runnable onPress;
     private final boolean primaryRed;
+    private UIHelper.Icon icon;
     private boolean isPressedState = false;
 
-    public ThemeButton(int x, int y, int width, int height, Text message, Runnable onPress, boolean primaryRed) {
+    public ThemeButton(int x, int y, int width, int height, UIHelper.Icon icon, Text message, Runnable onPress, boolean primaryRed) {
         super(x, y, width, height, message);
+        this.icon = icon;
         this.onPress = onPress;
         this.primaryRed = primaryRed;
     }
 
+    public ThemeButton(int x, int y, int width, int height, UIHelper.Icon icon, Text message, Runnable onPress) {
+        this(x, y, width, height, icon, message, onPress, false);
+    }
+
+    public ThemeButton(int x, int y, int width, int height, Text message, Runnable onPress, boolean primaryRed) {
+        this(x, y, width, height, UIHelper.Icon.NONE, message, onPress, primaryRed);
+    }
+
     public ThemeButton(int x, int y, int width, int height, Text message, Runnable onPress) {
-        this(x, y, width, height, message, onPress, false);
+        this(x, y, width, height, UIHelper.Icon.NONE, message, onPress, false);
+    }
+
+    public void setIcon(UIHelper.Icon icon) {
+        this.icon = icon;
     }
 
     @Override
@@ -51,21 +65,21 @@ public class ThemeButton extends ClickableWidget {
         int textColor;
 
         if (!this.active) {
-            bgColor = 0xFF1A1A1D;
-            borderColor = 0xFF2C2C30;
-            textColor = 0xFF6E6E73;
+            bgColor = 0xFF1F2128;
+            borderColor = 0xFF2E313B;
+            textColor = 0xFF6E727D;
         } else if (this.isPressedState && this.isHovered()) {
             bgColor = 0xFFD32F2F;
             borderColor = 0xFFFFFFFF;
             textColor = 0xFFFFFFFF;
         } else if (this.isHovered()) {
-            bgColor = primaryRed ? 0xFFC62828 : 0xFF2A1215;
-            borderColor = 0xFFE53935;
+            bgColor = primaryRed ? 0xFFC62828 : 0xFF393D4B;
+            borderColor = primaryRed ? 0xFFFF5252 : 0xFF545A6E;
             textColor = 0xFFFFFFFF;
         } else {
-            bgColor = primaryRed ? 0xFF8E1616 : 0xFF16161A;
-            borderColor = primaryRed ? 0xFFD32F2F : 0xFF5C1919;
-            textColor = 0xFFFFFFFF;
+            bgColor = primaryRed ? 0xFF9E1B1B : 0xFF2E323E;
+            borderColor = primaryRed ? 0xFFD32F2F : 0xFF424756;
+            textColor = 0xFFE8EAED;
         }
 
         context.fill(getX(), getY(), getX() + getWidth(), getY() + getHeight(), bgColor);
@@ -73,10 +87,19 @@ public class ThemeButton extends ClickableWidget {
 
         TextRenderer tr = MinecraftClient.getInstance().textRenderer;
         int textWidth = tr.getWidth(getMessage());
-        int textX = getX() + (getWidth() - textWidth) / 2;
+        int iconSpace = (icon != null && icon != UIHelper.Icon.NONE) ? 11 : 0;
+        int totalContentW = textWidth + iconSpace;
+
+        int startX = getX() + (getWidth() - totalContentW) / 2;
         int textY = getY() + (getHeight() - tr.fontHeight) / 2 + 1;
 
-        context.drawTextWithShadow(tr, getMessage(), textX, textY, textColor);
+        if (icon != null && icon != UIHelper.Icon.NONE) {
+            int iconY = getY() + (getHeight() - 8) / 2;
+            UIHelper.drawIcon(context, icon, startX, iconY, textColor);
+            startX += iconSpace;
+        }
+
+        context.drawTextWithShadow(tr, getMessage(), startX, textY, textColor);
     }
 
     @Override

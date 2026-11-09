@@ -2,6 +2,7 @@ package com.ahmed.screenrecorder.mixin;
 
 import com.ahmed.screenrecorder.gui.RecordingsScreen;
 import com.ahmed.screenrecorder.gui.ThemeButton;
+import com.ahmed.screenrecorder.gui.UIHelper;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.TitleScreen;
 import net.minecraft.text.Text;
@@ -24,7 +25,7 @@ public abstract class TitleScreenMixin extends Screen {
 
         this.addDrawableChild(new ThemeButton(
                 btnX, btnY, btnW, 20,
-                Text.literal("📁 Recordings"),
+                UIHelper.Icon.FOLDER, Text.literal("Recordings"),
                 () -> {
                     if (this.client != null) {
                         this.client.setScreen(new RecordingsScreen(this));

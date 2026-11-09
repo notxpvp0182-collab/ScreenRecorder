@@ -24,11 +24,12 @@ public class RecordingIndicator {
 
         MinecraftClient client = MinecraftClient.getInstance();
         TextRenderer tr = client.textRenderer;
-        String text = "● REC " + mgr.getFormattedDuration();
+        String label = "REC " + mgr.getFormattedDuration();
 
         int padX = 6;
         int padY = 4;
-        int boxWidth = tr.getWidth(text) + padX * 2;
+        int iconW = 11;
+        int boxWidth = iconW + tr.getWidth(label) + padX * 2;
         int boxHeight = tr.fontHeight + padY * 2;
 
         int sw = context.getScaledWindowWidth();
@@ -45,11 +46,10 @@ public class RecordingIndicator {
             case BOTTOM_LEFT, BOTTOM_RIGHT -> sh - boxHeight - margin;
         };
 
-        context.fill(x, y, x + boxWidth, y + boxHeight, 0xE60D0D0F);
+        context.fill(x, y, x + boxWidth, y + boxHeight, 0xE6121318);
         UIHelper.drawBorder(context, x, y, boxWidth, boxHeight, 0xFFB71C1C);
 
-        context.drawTextWithShadow(tr, "●", x + padX, y + padY, 0xFFE53935);
-        int dotWidth = tr.getWidth("● ");
-        context.drawTextWithShadow(tr, "REC " + mgr.getFormattedDuration(), x + padX + dotWidth, y + padY, 0xFFFFFFFF);
+        UIHelper.drawIcon(context, UIHelper.Icon.RECORD, x + padX, y + (boxHeight - 8) / 2, 0xFFE53935);
+        context.drawTextWithShadow(tr, label, x + padX + iconW, y + padY, 0xFFFFFFFF);
     }
 }
