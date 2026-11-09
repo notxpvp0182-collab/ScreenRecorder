@@ -5,14 +5,9 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
-import org.lwjgl.opengl.GL30;
 
 import java.nio.ByteBuffer;
 
-/**
- * Captures the rendered Minecraft framebuffer directly on the Render Thread
- * and transfers the pixel data into a pooled off-heap ByteBuffer.
- */
 public class VideoCaptureManager {
     private int lastCapturedWidth = 0;
     private int lastCapturedHeight = 0;
@@ -37,7 +32,6 @@ public class VideoCaptureManager {
 
         targetBuffer.clear();
 
-        GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, framebuffer.fbo);
         GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 1);
         GL11.glPixelStorei(GL12.GL_PACK_ROW_LENGTH, 0);
         GL11.glPixelStorei(GL12.GL_PACK_SKIP_PIXELS, 0);

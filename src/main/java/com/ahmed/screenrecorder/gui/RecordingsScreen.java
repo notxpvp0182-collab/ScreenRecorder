@@ -1,6 +1,7 @@
 package com.ahmed.screenrecorder.gui;
 
 import com.ahmed.screenrecorder.util.RecordingFileManager;
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
@@ -8,10 +9,6 @@ import net.minecraft.text.Text;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Displays saved MP4 recordings with filename, duration, resolution, FPS, file size,
- * creation date, and actions to Open Folder, Delete Recording, or Refresh List.
- */
 public class RecordingsScreen extends Screen {
     private final Screen parent;
     private List<RecordingFileManager.RecordingMetadata> recordings = new ArrayList<>();
@@ -86,7 +83,9 @@ public class RecordingsScreen extends Screen {
     }
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+    public boolean mouseClicked(Click click, boolean bl) {
+        double mouseX = click.x();
+        double mouseY = click.y();
         int listX = (this.width - 340) / 2;
         int listY = 48;
         int rowH = 34;
@@ -99,7 +98,7 @@ public class RecordingsScreen extends Screen {
                 return true;
             }
         }
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(click, bl);
     }
 
     @Override
@@ -122,7 +121,7 @@ public class RecordingsScreen extends Screen {
         int py = 14;
 
         context.fill(px, py, px + panelW, py + panelH, 0xFF101014);
-        context.drawBorder(px, py, panelW, panelH, 0xFF8E1616);
+        UIHelper.drawBorder(context, px, py, panelW, panelH, 0xFF8E1616);
 
         context.drawCenteredTextWithShadow(this.textRenderer, "SAVED MP4 RECORDINGS", this.width / 2, py + 10, 0xFFFFFFFF);
 
@@ -144,7 +143,7 @@ public class RecordingsScreen extends Screen {
                 int border = selected ? 0xFFE53935 : 0xFF2C2C34;
 
                 context.fill(listX, ry, listX + rowW, ry + rowH - 2, bg);
-                context.drawBorder(listX, ry, rowW, rowH - 2, border);
+                UIHelper.drawBorder(context, listX, ry, rowW, rowH - 2, border);
 
                 context.drawTextWithShadow(this.textRenderer, rec.filename(), listX + 6, ry + 5, 0xFFFFFFFF);
                 String details = String.format(

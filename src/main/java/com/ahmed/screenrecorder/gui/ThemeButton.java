@@ -2,16 +2,13 @@ package com.ahmed.screenrecorder.gui;
 
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.narration.NarrationMessageBuilder;
-import net.minecraft.client.gui.widget.PressableWidget;
+import net.minecraft.client.gui.widget.ClickableWidget;
 import net.minecraft.text.Text;
 
-/**
- * Custom solid Dark + Red + White button component with Normal, Hover, Pressed, and Disabled states.
- * Uses zero gradients or heavy animations for maximum FPS stability.
- */
-public class ThemeButton extends PressableWidget {
+public class ThemeButton extends ClickableWidget {
     private final Runnable onPress;
     private final boolean primaryRed;
     private boolean isPressedState = false;
@@ -27,24 +24,24 @@ public class ThemeButton extends PressableWidget {
     }
 
     @Override
-    public void onPress() {
-        if (this.active && this.onPress != null) {
+    public void onClick(Click click, boolean bl) {
+        if (this.active && this.visible && this.onPress != null) {
             this.onPress.run();
         }
     }
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (this.active && this.visible && this.isValidClickButton(button) && this.isMouseOver(mouseX, mouseY)) {
+    public boolean mouseClicked(Click click, boolean bl) {
+        if (this.active && this.visible && this.isMouseOver(click.x(), click.y())) {
             this.isPressedState = true;
         }
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(click, bl);
     }
 
     @Override
-    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+    public boolean mouseReleased(Click click) {
         this.isPressedState = false;
-        return super.mouseReleased(mouseX, mouseY, button);
+        return super.mouseReleased(click);
     }
 
     @Override
@@ -72,7 +69,7 @@ public class ThemeButton extends PressableWidget {
         }
 
         context.fill(getX(), getY(), getX() + getWidth(), getY() + getHeight(), bgColor);
-        context.drawBorder(getX(), getY(), getWidth(), getHeight(), borderColor);
+        UIHelper.drawBorder(context, getX(), getY(), getWidth(), getHeight(), borderColor);
 
         TextRenderer tr = MinecraftClient.getInstance().textRenderer;
         int textWidth = tr.getWidth(getMessage());

@@ -11,10 +11,6 @@ import net.minecraft.text.Text;
 
 import java.util.List;
 
-/**
- * Categorized Settings Screen (VIDEO, AUDIO, MICROPHONE, RECORDING, CONTROLS, PERFORMANCE)
- * with full Dark/Red/White styling and persistent configuration saving.
- */
 public class RecorderSettingsScreen extends Screen {
     public enum Category {
         VIDEO("VIDEO"),
@@ -47,7 +43,6 @@ public class RecorderSettingsScreen extends Screen {
     protected void init() {
         RecordingConfig cfg = RecordingConfig.get();
 
-        // Top Category Tabs
         Category[] categories = Category.values();
         int tabW = 72;
         int totalTabW = categories.length * (tabW + 4);
@@ -83,7 +78,6 @@ public class RecorderSettingsScreen extends Screen {
             case PERFORMANCE -> buildPerformanceTab(cfg, leftColX, rightColX, colW, rowY, stepY);
         }
 
-        // Save & Back Button
         this.addDrawableChild(new ThemeButton(
                 this.width / 2 - 80, this.height - 32, 160, 22,
                 Text.literal("SAVE & RETURN"),
@@ -154,7 +148,6 @@ public class RecorderSettingsScreen extends Screen {
                 }
         ));
 
-        // Custom numeric fields
         customWidthField = new TextFieldWidget(this.textRenderer, leftX, y + stepY * 3 + 10, 72, 18, Text.literal("Width"));
         customWidthField.setText(String.valueOf(cfg.customWidth));
         this.addDrawableChild(customWidthField);
@@ -372,7 +365,7 @@ public class RecorderSettingsScreen extends Screen {
         int py = 18;
 
         context.fill(px, py, px + panelW, py + panelH, 0xFF101014);
-        context.drawBorder(px, py, panelW, panelH, 0xFF8E1616);
+        UIHelper.drawBorder(context, px, py, panelW, panelH, 0xFF8E1616);
 
         if (activeCategory == Category.VIDEO) {
             int labelY = 66 + 28 * 3;
