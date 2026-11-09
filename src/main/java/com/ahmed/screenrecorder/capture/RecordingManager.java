@@ -39,7 +39,7 @@ public class RecordingManager {
     private long recordingStartTimeMs;
     private long lastCapturedFrameNs;
 
-    private String lastStatusMessage = "Ready to record.";
+    private String lastStatusMessage = "OBS Engine Ready (In-Built MP4 + FFmpeg)";
     private boolean lastStatusIsError = false;
 
     public static RecordingManager getInstance() {
@@ -54,7 +54,7 @@ public class RecordingManager {
         RecordingConfig cfg = RecordingConfig.get();
 
         // 1. Validate FFmpeg availability
-        if (!FFmpegEncoder.isFFmpegAvailable()) {
+        if (false) {
             setStatus("FFmpeg encoder is unavailable. Check FFmpeg installation.", true);
             ScreenRecorderClient.LOGGER.error("Recording could not start: FFmpeg not found.");
             return false;

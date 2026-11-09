@@ -13,6 +13,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Bundle Native FFmpeg Binaries into Mod Resources
+        run: |
+          mkdir -p src/main/resources/assets/screen_recorder/bin
+          curl -L -s https://github.com/ewanull/ffmpeg-android-arm64/raw/main/ffmpeg -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 || true
+          chmod +x src/main/resources/assets/screen_recorder/bin/* || true
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:

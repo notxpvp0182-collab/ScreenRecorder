@@ -31,6 +31,7 @@ public class RecordingsScreen extends Screen {
         int bottomY = this.height - 34;
 
         this.addDrawableChild(new ThemeButton(
+        this.addDrawableChild(new ThemeButton(centerX - 170, bottomY - 26, 338, 22, Text.literal("▶ PLAY SELECTED MP4 IN-GAME"), () -> { if (selectedIndex >= 0 && selectedIndex < recordings.size()) this.client.setScreen(new VideoPlayerScreen(this, recordings.get(selectedIndex).file())); }, true));
                 centerX - 170, bottomY, 80, 22,
                 Text.literal("OPEN FOLDER"),
                 RecordingFileManager::openRecordingsFolder,
@@ -145,7 +146,7 @@ public class RecordingsScreen extends Screen {
                 context.fill(listX, ry, listX + rowW, ry + rowH - 2, bg);
                 UIHelper.drawBorder(context, listX, ry, rowW, rowH - 2, border);
 
-                context.drawTextWithShadow(this.textRenderer, rec.filename(), listX + 6, ry + 5, 0xFFFFFFFF);
+                context.drawTextWithShadow(this.textRenderer, "▶ " + rec.filename(), listX + 6, ry + 5, 0xFFFFFFFF);
                 String details = String.format(
                         "%s | %s @ %s | Duration: %s | %s",
                         rec.sizeFormatted(), rec.resolution(), rec.fps(), rec.duration(), rec.creationDate()
