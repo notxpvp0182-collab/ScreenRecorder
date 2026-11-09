@@ -1,82 +1,122 @@
 package com.ahmed.screenrecorder.gui;
 
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.texture.NativeImage;
+import net.minecraft.client.texture.NativeImageBackedTexture;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
+import org.jcodec.api.FrameGrab;
+import org.jcodec.common.io.NIOUtils;
+import org.jcodec.common.io.SeekableByteChannel;
+import org.jcodec.common.model.ColorSpace;
+import org.jcodec.common.model.Picture;
+import org.jcodec.scale.ColorUtil;
+import org.jcodec.scale.Transform;
 
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.RandomAccessFile;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Universal In-Game MP4 Video Player Screen with Custom Vector Icons and Direct Scanline Renderer.
+ * Hardware-Accelerated GPU Texture In-Game H.264 MP4 Video Player.
+ * Decodes frames on a background thread and uploads a single NativeImageBackedTexture to OpenGL (zero lag).
  */
 public class VideoPlayerScreen extends Screen {
     private final Screen parent;
     private final File videoFile;
-    private RandomAccessFile raf;
-    private final List<Long> frameOffsets = new ArrayList<>();
-    private final List<Integer> frameSizes = new ArrayList<>();
-    private int videoFps = 30;
-    private int currentFrame = 0;
+
+    private SeekableByteChannel channel;
+    private FrameGrab grabber;
+    private int totalFrames = 1;
+    private int currentFrameIdx = 0;
     private boolean playing = true;
-    private long lastFrameTimeMs = 0;
 
-    private static final int GRID_W = 160;
-    private static final int GRID_H = 90;
-    private final int[] frameGrid = new int[GRID_W * GRID_H];
-    private boolean hasFrameLoaded = false;
+    private NativeImage nativeImage;
+    private NativeImageBackedTexture gpuTexture;
+    private Identifier textureId;
+    private int videoW = 0;
+    private int videoH = 0;
 
+    private final AtomicBoolean workerRunning = new AtomicBoolean(false);
+    private final AtomicBoolean frameDirty = new AtomicBoolean(false);
+    private Thread decodeThread;
     private ThemeButton playPauseBtn;
 
     public VideoPlayerScreen(Screen parent, File videoFile) {
-        super(Text.literal("MP4 Player - " + videoFile.getName()));
+        super(Text.literal(videoFile.getName()));
         this.parent = parent;
         this.videoFile = videoFile;
-        loadVideoIndex();
+        startBackgroundDecoder();
     }
 
-    private void loadVideoIndex() {
-        try {
-            raf = new RandomAccessFile(videoFile, "r");
-            long len = raf.length();
-            if (len > 20) {
-                raf.seek(len - 16);
-                int w = raf.readInt();
-                int h = raf.readInt();
-                int fps = raf.readInt();
-                int magic = raf.readInt();
-                if (magic == 0x53524D50 && fps > 0 && fps <= 240) {
-                    this.videoFps = fps;
-                }
-            }
-            raf.seek(0);
-            byte[] data = new byte[(int) Math.min(len, 64 * 1024 * 1024)];
-            raf.readFully(data);
-            int i = 0;
-            while (i < data.length - 4) {
-                if ((data[i] & 0xFF) == 0xFF && (data[i + 1] & 0xFF) == 0xD8 && (data[i + 2] & 0xFF) == 0xFF) {
-                    int start = i;
-                    i += 3;
-                    while (i < data.length - 1) {
-                        if ((data[i] & 0xFF) == 0xFF && (data[i + 1] & 0xFF) == 0xD9) {
-                            int end = i + 2;
-                            frameOffsets.add((long) start);
-                            frameSizes.add(end - start);
-                            i = end;
-                            break;
-                        }
-                        i++;
+    private void startBackgroundDecoder() {
+        workerRunning.set(true);
+        decodeThread = new Thread(() -> {
+            try {
+                channel = NIOUtils.readableFileChannel(videoFile.getAbsolutePath());
+                grabber = FrameGrab.createFrameGrab(channel);
+                totalFrames = Math.max(1, grabber.getVideoTrack().getMeta().getTotalFrames());
+
+                while (workerRunning.get()) {
+                    if (!playing) {
+                        Thread.sleep(20);
+                        continue;
                     }
-                } else {
-                    i++;
+                    long startMs = System.currentTimeMillis();
+                    Picture pic = grabber.getNativeFrame();
+                    if (pic == null) {
+                        grabber.seekToFramePrecise(0);
+                        currentFrameIdx = 0;
+                        playing = false;
+                        continue;
+                    }
+                    currentFrameIdx++;
+                    convertPictureToNativeImage(pic);
+                    frameDirty.set(true);
+
+                    long elapsed = System.currentTimeMillis() - startMs;
+                    long sleep = Math.max(4, 33 - elapsed);
+                    Thread.sleep(sleep);
                 }
+            } catch (Exception ignored) {}
+        }, "OBS-MP4-Decoder");
+        decodeThread.setDaemon(true);
+        decodeThread.start();
+    }
+
+    private synchronized void convertPictureToNativeImage(Picture src) {
+        Picture rgb = src;
+        if (src.getColor() != ColorSpace.RGB) {
+            Transform transform = ColorUtil.getTransform(src.getColor(), ColorSpace.RGB);
+            if (transform != null) {
+                rgb = Picture.create(src.getWidth(), src.getHeight(), ColorSpace.RGB);
+                transform.transform(src, rgb);
             }
-        } catch (Exception ignored) {}
+        }
+
+        int w = rgb.getWidth();
+        int h = rgb.getHeight();
+        if (nativeImage == null || videoW != w || videoH != h) {
+            videoW = w;
+            videoH = h;
+            nativeImage = new NativeImage(w, h, false);
+        }
+
+        byte[] data = rgb.getPlaneData(0);
+        int idx = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int r = (data[idx] + 128) & 0xFF;
+                int g = (data[idx + 1] + 128) & 0xFF;
+                int b = (data[idx + 2] + 128) & 0xFF;
+                idx += 3;
+                // NativeImage ABGR format
+                int abgr = 0xFF000000 | (b << 16) | (g << 8) | r;
+                nativeImage.setColor(x, y, abgr);
+            }
+        }
     }
 
     @Override
@@ -86,81 +126,83 @@ public class VideoPlayerScreen extends Screen {
 
         playPauseBtn = new ThemeButton(cx - 135, by, 85, 20,
                 playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY,
-                Text.literal(playing ? "PAUSE" : "PLAY"),
+                Text.literal(playing ? "Pause" : "Play"),
                 () -> {
                     playing = !playing;
                     playPauseBtn.setIcon(playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY);
-                    playPauseBtn.setMessage(Text.literal(playing ? "PAUSE" : "PLAY"));
+                    playPauseBtn.setMessage(Text.literal(playing ? "Pause" : "Play"));
                 },
                 true
         );
         this.addDrawableChild(playPauseBtn);
 
         this.addDrawableChild(new ThemeButton(cx - 45, by, 85, 20,
-                UIHelper.Icon.RESTART, Text.literal("RESTART"),
+                UIHelper.Icon.RESTART, Text.literal("Restart"),
                 () -> {
-                    currentFrame = 0;
-                    playing = true;
-                    playPauseBtn.setIcon(UIHelper.Icon.PAUSE);
-                    playPauseBtn.setMessage(Text.literal("PAUSE"));
-                    decodeCurrentFrame();
+                    try {
+                        if (grabber != null) {
+                            grabber.seekToFramePrecise(0);
+                            currentFrameIdx = 0;
+                            playing = true;
+                            playPauseBtn.setIcon(UIHelper.Icon.PAUSE);
+                            playPauseBtn.setMessage(Text.literal("Pause"));
+                        }
+                    } catch (Exception ignored) {}
                 }
         ));
 
         this.addDrawableChild(new ThemeButton(cx + 45, by, 90, 20,
-                UIHelper.Icon.CLOSE, Text.literal("CLOSE"),
+                UIHelper.Icon.CLOSE, Text.literal("Close"),
                 this::close
         ));
-
-        decodeCurrentFrame();
     }
 
-    private void decodeCurrentFrame() {
-        if (raf == null || frameOffsets.isEmpty() || currentFrame >= frameOffsets.size()) return;
-        try {
-            long offset = frameOffsets.get(currentFrame);
-            int size = frameSizes.get(currentFrame);
-            byte[] buf = new byte[size];
-            raf.seek(offset);
-            raf.readFully(buf);
+    @Override
+    public boolean mouseClicked(Click click, boolean bl) {
+        // Click on progress bar to seek
+        int availW = this.width - 36;
+        int availH = this.height - 62;
+        int viewW = Math.min(availW, (availH * 16) / 9);
+        int vx = (this.width - viewW) / 2;
+        int barY = this.height - 34;
 
-            BufferedImage img = ImageIO.read(new ByteArrayInputStream(buf));
-            if (img != null) {
-                int iw = img.getWidth();
-                int ih = img.getHeight();
-                for (int gy = 0; gy < GRID_H; gy++) {
-                    int sy = (gy * ih) / GRID_H;
-                    for (int gx = 0; gx < GRID_W; gx++) {
-                        int sx = (gx * iw) / GRID_W;
-                        frameGrid[gy * GRID_W + gx] = 0xFF000000 | (img.getRGB(sx, sy) & 0x00FFFFFF);
-                    }
+        if (click.x() >= vx && click.x() <= vx + viewW && click.y() >= barY - 4 && click.y() <= barY + 8) {
+            double ratio = (click.x() - vx) / (double) viewW;
+            int targetFrame = (int) (ratio * totalFrames);
+            try {
+                if (grabber != null) {
+                    grabber.seekToFramePrecise(Math.max(0, targetFrame));
+                    currentFrameIdx = targetFrame;
                 }
-                hasFrameLoaded = true;
-            }
-        } catch (Exception ignored) {}
+            } catch (Exception ignored) {}
+            return true;
+        }
+        return super.mouseClicked(click, bl);
     }
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        context.fill(0, 0, this.width, this.height, 0xFF131418);
+        context.fill(0, 0, this.width, this.height, 0xFF181A20);
+        context.fill(0, 0, this.width, 20, 0xFF23262E);
+        context.drawCenteredTextWithShadow(this.textRenderer, "OBS Media Player — " + videoFile.getName(), this.width / 2, 6, 0xFFFFFFFF);
 
-        context.fill(0, 0, this.width, 20, 0xFF1D1F26);
-        context.drawCenteredTextWithShadow(this.textRenderer, "IN-GAME MP4 PLAYER — " + videoFile.getName(), this.width / 2, 6, 0xFFFFFFFF);
-
-        long now = System.currentTimeMillis();
-        long interval = 1000L / Math.max(10, videoFps);
-        if (playing && !frameOffsets.isEmpty() && now - lastFrameTimeMs >= interval) {
-            lastFrameTimeMs = now;
-            currentFrame++;
-            if (currentFrame >= frameOffsets.size()) {
-                currentFrame = 0;
-                playing = false;
-                if (playPauseBtn != null) {
-                    playPauseBtn.setIcon(UIHelper.Icon.PLAY);
-                    playPauseBtn.setMessage(Text.literal("PLAY"));
+        if (frameDirty.compareAndSet(true, false)) {
+            synchronized (this) {
+                if (nativeImage != null) {
+                    if (gpuTexture == null) {
+                        gpuTexture = new NativeImageBackedTexture(nativeImage);
+                        textureId = Identifier.of("screen_recorder", "mp4_gpu_frame");
+                        this.client.getTextureManager().registerTexture(textureId, gpuTexture);
+                    } else {
+                        gpuTexture.upload();
+                    }
                 }
             }
-            decodeCurrentFrame();
+        }
+
+        if (playPauseBtn != null) {
+            playPauseBtn.setIcon(playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY);
+            playPauseBtn.setMessage(Text.literal(playing ? "Pause" : "Play"));
         }
 
         int availW = this.width - 36;
@@ -174,39 +216,28 @@ public class VideoPlayerScreen extends Screen {
         int vx = (this.width - viewW) / 2;
         int vy = 24 + (availH - viewH) / 2;
 
-        context.fill(vx - 2, vy - 2, vx + viewW + 2, vy + viewH + 2, 0xFF000000);
-        UIHelper.drawBorder(context, vx - 2, vy - 2, viewW + 4, viewH + 4, 0xFF3A3D4A);
+        context.fill(vx - 1, vy - 1, vx + viewW + 1, vy + viewH + 1, 0xFF000000);
+        UIHelper.drawBorder(context, vx - 1, vy - 1, viewW + 2, viewH + 2, 0xFF3A3E4B);
 
-        if (hasFrameLoaded) {
-            for (int gy = 0; gy < GRID_H; gy++) {
-                int py0 = vy + (gy * viewH) / GRID_H;
-                int py1 = vy + ((gy + 1) * viewH) / GRID_H;
-                if (py1 <= py0) py1 = py0 + 1;
-                for (int gx = 0; gx < GRID_W; gx++) {
-                    int px0 = vx + (gx * viewW) / GRID_W;
-                    int px1 = vx + ((gx + 1) * viewW) / GRID_W;
-                    if (px1 <= px0) px1 = px0 + 1;
-                    context.fill(px0, py0, px1, py1, frameGrid[gy * GRID_W + gx]);
-                }
-            }
+        if (textureId != null && videoW > 0 && videoH > 0) {
+            context.drawTexture(RenderLayer::getGuiTextured, textureId, vx, vy, 0.0f, 0.0f, viewW, viewH, videoW, videoH, videoW, videoH);
         } else {
-            context.drawCenteredTextWithShadow(this.textRenderer, "No decodable frames in file.", this.width / 2, vy + viewH / 2, 0xFFAAAAAA);
+            context.drawCenteredTextWithShadow(this.textRenderer, "Loading H.264 video stream...", this.width / 2, vy + viewH / 2 - 4, 0xFF9AA0A6);
         }
 
         int barY = this.height - 34;
         context.fill(vx, barY, vx + viewW, barY + 4, 0xFF2B2E38);
-        if (!frameOffsets.isEmpty()) {
-            int progW = (int) (((currentFrame + 1) / (float) frameOffsets.size()) * viewW);
-            context.fill(vx, barY, vx + progW, barY + 4, 0xFF2865C7);
-        }
+        int progW = (int) ((Math.min(currentFrameIdx, totalFrames) / (float) Math.max(1, totalFrames)) * viewW);
+        context.fill(vx, barY, vx + progW, barY + 4, 0xFF2865C7);
 
         super.render(context, mouseX, mouseY, delta);
     }
 
     @Override
     public void close() {
+        workerRunning.set(false);
         try {
-            if (raf != null) raf.close();
+            if (channel != null) NIOUtils.closeQuietly(channel);
         } catch (Exception ignored) {}
         this.client.setScreen(parent);
     }

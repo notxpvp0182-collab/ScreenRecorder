@@ -1,6 +1,6 @@
 {
   "key.category.screen_recorder.general": "Screen Recorder",
-  "category.screen_recorder.general": "Screen Recorder",
-  "key.screen_recorder.open_gui": "Open Screen Recorder",
+  "category.screen_recorder.general": "OBS Studio",
+  "key.screen_recorder.open_gui": "Open OBS Studio",
   "key.screen_recorder.toggle_recording": "Start/Stop Recording"
 }

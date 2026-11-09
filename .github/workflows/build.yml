@@ -1,4 +1,4 @@
-name: Build Fabric Mod JAR
+name: Build OBS Mod JAR
 
 on:
   push:
@@ -13,10 +13,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Bundle Native FFmpeg Binaries into Mod Resources
+      - name: Download Official OBS Icon & Native FFmpeg
         run: |
           mkdir -p src/main/resources/assets/screen_recorder/bin
-          curl -L -s https://github.com/ewanull/ffmpeg-android-arm64/raw/main/ffmpeg -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 || true
+          curl -L -s "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/OBS_Studio_Logo.svg/256px-OBS_Studio_Logo.svg.png" -o src/main/resources/assets/screen_recorder/icon.png || true
+          curl -L -s "https://github.com/AlwaysLivid/ffmpeg-android-arm64-static/releases/latest/download/ffmpeg" -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 || true
           chmod +x src/main/resources/assets/screen_recorder/bin/* || true
 
       - name: Set up JDK 21
@@ -34,7 +35,7 @@ jobs:
       - name: Upload Built JAR
         uses: actions/upload-artifact@v4
         with:
-          name: Screen-Recorder-Mod-JAR
+          name: OBS-Mod-JAR
           path: |
             build/libs/*.jar
             !build/libs/*-sources.jar

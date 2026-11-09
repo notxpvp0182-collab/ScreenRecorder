@@ -21,6 +21,8 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
     modImplementation "com.terraformersmc:modmenu:${project.modmenu_version}"
+    implementation include("org.jcodec:jcodec:0.2.5")
+    implementation include("org.jcodec:jcodec-javase:0.2.5")
 }
 
 processResources {

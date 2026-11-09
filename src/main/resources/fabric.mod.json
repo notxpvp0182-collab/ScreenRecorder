@@ -2,7 +2,8 @@
   "schemaVersion": 1,
   "id": "screen_recorder",
   "version": "${version}",
-  "name": "Screen Recorder",
+  "name": "OBS",
+  "icon": "assets/screen_recorder/icon.png",
   "description": "A professional in-game Minecraft screen recorder.",
   "authors": [
     "Ahmed"
