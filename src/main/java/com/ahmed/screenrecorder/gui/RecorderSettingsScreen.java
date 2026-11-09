@@ -1,6 +1,5 @@
 package com.ahmed.screenrecorder.gui;
 
-import com.ahmed.screenrecorder.audio.AudioCaptureManager;
 import com.ahmed.screenrecorder.audio.MicrophoneManager;
 import com.ahmed.screenrecorder.config.RecordingConfig;
 import net.minecraft.client.gui.DrawContext;
@@ -12,8 +11,7 @@ import net.minecraft.text.Text;
 import java.util.List;
 
 /**
- * Authentic OBS Studio 30 Settings Dialog with Left Vertical Category Sidebar,
- * Real-Time Connected Microphone Detection, and Responsive Mobile/PC Scaling.
+ * OBS Studio Settings Screen with Instant Live Updating & Visual Apply Feedback.
  */
 public class RecorderSettingsScreen extends Screen {
     public enum Category {
@@ -23,7 +21,6 @@ public class RecorderSettingsScreen extends Screen {
         VIDEO("Video", UIHelper.Icon.VIDEO),
         HOTKEYS("Hotkeys", UIHelper.Icon.FILTERS),
         ADVANCED("Advanced", UIHelper.Icon.PERFORMANCE),
-        // Aliases for compatibility
         RECORDING("Output", UIHelper.Icon.RECORD),
         MICROPHONE("Audio", UIHelper.Icon.MICROPHONE),
         CONTROLS("Hotkeys", UIHelper.Icon.FILTERS),
@@ -50,6 +47,9 @@ public class RecorderSettingsScreen extends Screen {
     private TextFieldWidget customBitrateField;
     private TextFieldWidget filePrefixField;
 
+    private String liveFeedbackText = "All settings synced live with OBS Engine";
+    private long lastFeedbackTimeMs = 0;
+
     public RecorderSettingsScreen(Screen parent, Category initialCategory) {
         super(Text.literal("Settings"));
         this.parent = parent;
@@ -66,6 +66,13 @@ public class RecorderSettingsScreen extends Screen {
         };
     }
 
+    private void triggerLiveUpdate(String changeSummary) {
+        RecordingConfig.save();
+        this.liveFeedbackText = "Applied Live: " + changeSummary;
+        this.lastFeedbackTimeMs = System.currentTimeMillis();
+        this.clearAndInit();
+    }
+
     @Override
     protected void init() {
         RecordingConfig cfg = RecordingConfig.get();
@@ -79,7 +86,6 @@ public class RecorderSettingsScreen extends Screen {
         int sideX = wx + 6;
         int sideY = wy + 20;
 
-        // Left Sidebar Category Buttons (OBS Yami Style)
         for (int i = 0; i < SIDEBAR_TABS.length; i++) {
             Category tab = SIDEBAR_TABS[i];
             boolean selected = (tab == activeCategory);
@@ -95,13 +101,12 @@ public class RecorderSettingsScreen extends Screen {
             ));
         }
 
-        // Right Content Pane Coordinates
         int contentX = sideX + sidebarW + 10;
         int contentW = winW - sidebarW - 22;
         int colW = (contentW - 6) / 2;
         int rightColX = contentX + colW + 6;
         int startY = wy + 24;
-        int stepY = 26;
+        int stepY = 25;
 
         switch (activeCategory) {
             case GENERAL -> buildGeneralPane(cfg, contentX, rightColX, colW, startY, stepY);
@@ -113,33 +118,33 @@ public class RecorderSettingsScreen extends Screen {
             default -> buildGeneralPane(cfg, contentX, rightColX, colW, startY, stepY);
         }
 
-        // Bottom Right OK / Cancel / Apply Buttons
-        int btnY = wy + winH - 24;
+        int btnY = wy + winH - 23;
         this.addDrawableChild(new ThemeButton(wx + winW - 140, btnY, 64, 18,
                 Text.literal("OK"), this::close, true));
         this.addDrawableChild(new ThemeButton(wx + winW - 72, btnY, 64, 18,
-                Text.literal("Apply"), this::saveTextFields));
+                Text.literal("Apply"), () -> {
+            saveTextFields();
+            triggerLiveUpdate("Custom Values Saved");
+        }));
     }
 
     private void buildGeneralPane(RecordingConfig cfg, int lx, int rx, int w, int y, int stepY) {
         this.addDrawableChild(new ThemeButton(lx, y, w, 20,
-                Text.literal("Theme: Yami Dark"), () -> {}));
+                Text.literal("Theme: OBS Yami Dark"), () -> triggerLiveUpdate("Theme Verified")));
 
         this.addDrawableChild(new ThemeButton(rx, y, w, 20,
                 Text.literal("HUD REC: " + (cfg.showIndicator ? "ON" : "OFF")),
                 () -> {
                     cfg.showIndicator = !cfg.showIndicator;
-                    RecordingConfig.save();
-                    this.clearAndInit();
-                }));
+                    triggerLiveUpdate("HUD Indicator = " + (cfg.showIndicator ? "ON" : "OFF"));
+                }, cfg.showIndicator));
 
         this.addDrawableChild(new ThemeButton(lx, y + stepY, w, 20,
                 Text.literal("Corner: " + cfg.indicatorPosition.label),
                 () -> {
                     RecordingConfig.IndicatorPosition[] vals = RecordingConfig.IndicatorPosition.values();
                     cfg.indicatorPosition = vals[(cfg.indicatorPosition.ordinal() + 1) % vals.length];
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Indicator Position = " + cfg.indicatorPosition.label);
                 }));
     }
 
@@ -149,12 +154,14 @@ public class RecorderSettingsScreen extends Screen {
                 () -> {
                     RecordingConfig.VideoQuality[] vals = RecordingConfig.VideoQuality.values();
                     cfg.videoQuality = vals[(cfg.videoQuality.ordinal() + 1) % vals.length];
-                    RecordingConfig.save();
-                    this.clearAndInit();
-                }));
+                    if (cfg.videoQuality != RecordingConfig.VideoQuality.CUSTOM) {
+                        cfg.customBitrateKbps = cfg.videoQuality.bitrateKbps;
+                    }
+                    triggerLiveUpdate("Quality = " + cfg.videoQuality.label);
+                }, true));
 
         this.addDrawableChild(new ThemeButton(rx, y, w, 20,
-                Text.literal("Encoder: H.264 MP4"), () -> {}));
+                Text.literal("Encoder: H.264 Stream"), () -> triggerLiveUpdate("Encoder = H.264")));
 
         List<String> presets = List.of("ultrafast", "superfast", "veryfast", "faster", "fast");
         this.addDrawableChild(new ThemeButton(lx, y + stepY, w, 20,
@@ -162,19 +169,30 @@ public class RecorderSettingsScreen extends Screen {
                 () -> {
                     int idx = (presets.indexOf(cfg.encoderPreset) + 1) % presets.size();
                     cfg.encoderPreset = presets.get(idx);
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Encoder Preset = " + cfg.encoderPreset);
                 }));
 
         this.addDrawableChild(new ThemeButton(rx, y + stepY, w, 20,
-                Text.literal("Format: .mp4 (AVC1)"), () -> {}));
+                Text.literal("Bitrate: " + cfg.getTargetBitrateKbps() + " kbps"), () -> {}));
 
         customBitrateField = new TextFieldWidget(this.textRenderer, lx, y + stepY * 2 + 12, w, 18, Text.literal("Bitrate"));
-        customBitrateField.setText(String.valueOf(cfg.customBitrateKbps));
+        customBitrateField.setText(String.valueOf(cfg.getTargetBitrateKbps()));
+        customBitrateField.setChangedListener(val -> {
+            try {
+                cfg.customBitrateKbps = Integer.parseInt(val.trim());
+                RecordingConfig.save();
+            } catch (Exception ignored) {}
+        });
         this.addDrawableChild(customBitrateField);
 
         filePrefixField = new TextFieldWidget(this.textRenderer, rx, y + stepY * 2 + 12, w, 18, Text.literal("Prefix"));
         filePrefixField.setText(cfg.fileNamingPrefix);
+        filePrefixField.setChangedListener(val -> {
+            if (!val.isBlank()) {
+                cfg.fileNamingPrefix = val.trim();
+                RecordingConfig.save();
+            }
+        });
         this.addDrawableChild(filePrefixField);
     }
 
@@ -183,26 +201,21 @@ public class RecorderSettingsScreen extends Screen {
                 Text.literal("Desktop Audio: " + (cfg.gameAudioEnabled ? "ON" : "OFF")),
                 () -> {
                     cfg.gameAudioEnabled = !cfg.gameAudioEnabled;
-                    RecordingConfig.save();
-                    this.clearAndInit();
-                }));
+                    triggerLiveUpdate("Desktop Audio = " + (cfg.gameAudioEnabled ? "ON" : "OFF"));
+                }, cfg.gameAudioEnabled));
 
         this.addDrawableChild(new ThemeButton(rx, y, w, 20,
                 Text.literal("Desktop Vol: " + cfg.gameVolume + "%"),
                 () -> {
                     cfg.gameVolume = (cfg.gameVolume + 10) > 100 ? 0 : cfg.gameVolume + 10;
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Desktop Volume = " + cfg.gameVolume + "%");
                 }));
 
-        // Live Connected Microphone Hardware Selector
-        List<String> micDevices = MicrophoneManager.getAvailableMicrophoneDevices();
         this.addDrawableChild(new ThemeButton(lx, y + stepY, w, 20,
                 UIHelper.Icon.MICROPHONE, Text.literal("Mic: " + (cfg.microphoneEnabled ? "ON" : "OFF")),
                 () -> {
                     cfg.microphoneEnabled = !cfg.microphoneEnabled;
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Microphone = " + (cfg.microphoneEnabled ? "ON" : "OFF"));
                 }, cfg.microphoneEnabled));
 
         this.addDrawableChild(new ThemeButton(rx, y + stepY, w, 20,
@@ -211,41 +224,36 @@ public class RecorderSettingsScreen extends Screen {
                     List<String> liveMics = MicrophoneManager.getAvailableMicrophoneDevices();
                     int idx = (liveMics.indexOf(cfg.microphoneDevice) + 1) % liveMics.size();
                     cfg.microphoneDevice = liveMics.get(idx);
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Mic Device = " + cfg.microphoneDevice);
                 }));
 
         this.addDrawableChild(new ThemeButton(lx, y + stepY * 2, w, 20,
                 Text.literal("Noise Supp: " + (cfg.noiseSuppression ? "ON" : "OFF")),
                 () -> {
                     cfg.noiseSuppression = !cfg.noiseSuppression;
-                    RecordingConfig.save();
-                    this.clearAndInit();
-                }));
+                    triggerLiveUpdate("Noise Suppression = " + (cfg.noiseSuppression ? "ON" : "OFF"));
+                }, cfg.noiseSuppression));
 
         this.addDrawableChild(new ThemeButton(rx, y + stepY * 2, w, 20,
                 Text.literal("Noise Gate: " + (cfg.noiseGate ? "ON" : "OFF")),
                 () -> {
                     cfg.noiseGate = !cfg.noiseGate;
-                    RecordingConfig.save();
-                    this.clearAndInit();
-                }));
+                    triggerLiveUpdate("Noise Gate = " + (cfg.noiseGate ? "ON" : "OFF"));
+                }, cfg.noiseGate));
 
         this.addDrawableChild(new ThemeButton(lx, y + stepY * 3, w, 20,
                 Text.literal(String.format("Mic Gain: +%.0f dB", cfg.microphoneGainDb)),
                 () -> {
                     cfg.microphoneGainDb = (cfg.microphoneGainDb + 3.0f) > 18.0f ? 0.0f : cfg.microphoneGainDb + 3.0f;
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Mic Gain = +" + cfg.microphoneGainDb + " dB");
                 }));
 
         this.addDrawableChild(new ThemeButton(rx, y + stepY * 3, w, 20,
-                Text.literal("Bitrate: " + cfg.audioQuality.bitrateKbps + "k"),
+                Text.literal("Audio Bitrate: " + cfg.audioQuality.bitrateKbps + "k"),
                 () -> {
                     RecordingConfig.AudioQuality[] vals = RecordingConfig.AudioQuality.values();
                     cfg.audioQuality = vals[(cfg.audioQuality.ordinal() + 1) % vals.length];
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Audio Quality = " + cfg.audioQuality.label);
                 }));
     }
 
@@ -255,29 +263,34 @@ public class RecorderSettingsScreen extends Screen {
                 () -> {
                     RecordingConfig.ResolutionPreset[] vals = RecordingConfig.ResolutionPreset.values();
                     cfg.resolutionPreset = vals[(cfg.resolutionPreset.ordinal() + 1) % vals.length];
-                    RecordingConfig.save();
-                    this.clearAndInit();
-                }));
+                    if (cfg.resolutionPreset != RecordingConfig.ResolutionPreset.CUSTOM) {
+                        cfg.customWidth = cfg.resolutionPreset.width;
+                        cfg.customHeight = cfg.resolutionPreset.height;
+                    }
+                    triggerLiveUpdate("Resolution = " + cfg.getTargetWidth() + "x" + cfg.getTargetHeight());
+                }, true));
 
         this.addDrawableChild(new ThemeButton(rx, y, w, 20,
                 Text.literal("FPS Values: " + cfg.fpsPreset.label),
                 () -> {
                     RecordingConfig.FpsPreset[] vals = RecordingConfig.FpsPreset.values();
                     cfg.fpsPreset = vals[(cfg.fpsPreset.ordinal() + 1) % vals.length];
-                    RecordingConfig.save();
-                    this.clearAndInit();
-                }));
+                    if (cfg.fpsPreset != RecordingConfig.FpsPreset.CUSTOM) {
+                        cfg.customFps = cfg.fpsPreset.fps;
+                    }
+                    triggerLiveUpdate("Target FPS = " + cfg.getTargetFps() + " FPS");
+                }, true));
 
         customWidthField = new TextFieldWidget(this.textRenderer, lx, y + stepY + 12, w / 2 - 2, 18, Text.literal("Width"));
-        customWidthField.setText(String.valueOf(cfg.customWidth));
+        customWidthField.setText(String.valueOf(cfg.getTargetWidth()));
         this.addDrawableChild(customWidthField);
 
         customHeightField = new TextFieldWidget(this.textRenderer, lx + w / 2 + 2, y + stepY + 12, w / 2 - 2, 18, Text.literal("Height"));
-        customHeightField.setText(String.valueOf(cfg.customHeight));
+        customHeightField.setText(String.valueOf(cfg.getTargetHeight()));
         this.addDrawableChild(customHeightField);
 
         customFpsField = new TextFieldWidget(this.textRenderer, rx, y + stepY + 12, w, 18, Text.literal("Custom FPS"));
-        customFpsField.setText(String.valueOf(cfg.customFps));
+        customFpsField.setText(String.valueOf(cfg.getTargetFps()));
         this.addDrawableChild(customFpsField);
     }
 
@@ -294,16 +307,14 @@ public class RecorderSettingsScreen extends Screen {
                 () -> {
                     RecordingConfig.EncoderPriority[] vals = RecordingConfig.EncoderPriority.values();
                     cfg.encoderPriority = vals[(cfg.encoderPriority.ordinal() + 1) % vals.length];
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Thread Priority = " + cfg.encoderPriority.label);
                 }));
 
         this.addDrawableChild(new ThemeButton(rx, y, w, 20,
                 Text.literal("Buffer Queue: " + cfg.maxFrameQueueSize),
                 () -> {
                     cfg.maxFrameQueueSize = (cfg.maxFrameQueueSize >= 24) ? 6 : cfg.maxFrameQueueSize + 6;
-                    RecordingConfig.save();
-                    this.clearAndInit();
+                    triggerLiveUpdate("Frame Queue = " + cfg.maxFrameQueueSize);
                 }));
     }
 
@@ -328,7 +339,7 @@ public class RecorderSettingsScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        context.fill(0, 0, this.width, this.height, 0xB3090A0D);
+        context.fill(0, 0, this.width, this.height, 0x77000000);
 
         int winW = Math.min(500, Math.max(320, (int) (this.width * 0.88f)));
         int winH = Math.min(285, Math.max(195, (int) (this.height * 0.86f)));
@@ -336,31 +347,32 @@ public class RecorderSettingsScreen extends Screen {
         int wy = (this.height - winH) / 2;
         int sidebarW = Math.min(100, Math.max(76, winW / 4));
 
-        // OBS Settings Window Background
         context.fill(wx, wy, wx + winW, wy + winH, 0xFF1D1F26);
         UIHelper.drawBorder(context, wx, wy, winW, winH, 0xFF3A3E4B);
 
-        // Top Window Header
         context.fill(wx + 1, wy + 1, wx + winW - 1, wy + 16, 0xFF2B2E38);
-        context.drawTextWithShadow(this.textRenderer, "Settings — " + activeCategory.title, wx + 8, wy + 4, 0xFFFFFFFF);
+        context.drawTextWithShadow(this.textRenderer, "OBS Settings — " + activeCategory.title, wx + 8, wy + 4, 0xFFFFFFFF);
 
-        // Left Sidebar Background Box
         context.fill(wx + 4, wy + 18, wx + sidebarW + 8, wy + winH - 6, 0xFF15171C);
         UIHelper.drawBorder(context, wx + 4, wy + 18, sidebarW + 4, winH - 24, 0xFF2D313D);
 
-        // Right Content Area Box
         int cx = wx + sidebarW + 12;
         int cw = winW - sidebarW - 16;
         context.fill(cx, wy + 18, wx + winW - 4, wy + winH - 28, 0xFF23262E);
         UIHelper.drawBorder(context, cx, wy + 18, cw, winH - 46, 0xFF323644);
 
         if (activeCategory == Category.VIDEO) {
-            context.drawTextWithShadow(this.textRenderer, "Custom Width / Height", cx + 4, wy + 24 + 26 + 2, 0xFFBDC1C6);
-            context.drawTextWithShadow(this.textRenderer, "Custom FPS", cx + cw / 2 + 4, wy + 24 + 26 + 2, 0xFFBDC1C6);
+            context.drawTextWithShadow(this.textRenderer, "Active Width / Height:", cx + 4, wy + 24 + 25 + 2, 0xFFBDC1C6);
+            context.drawTextWithShadow(this.textRenderer, "Active FPS:", cx + cw / 2 + 4, wy + 24 + 25 + 2, 0xFFBDC1C6);
         } else if (activeCategory == Category.OUTPUT) {
-            context.drawTextWithShadow(this.textRenderer, "Bitrate (kbps)", cx + 4, wy + 24 + 52 + 2, 0xFFBDC1C6);
-            context.drawTextWithShadow(this.textRenderer, "Filename Prefix", cx + cw / 2 + 4, wy + 24 + 52 + 2, 0xFFBDC1C6);
+            context.drawTextWithShadow(this.textRenderer, "Bitrate (kbps):", cx + 4, wy + 24 + 50 + 2, 0xFFBDC1C6);
+            context.drawTextWithShadow(this.textRenderer, "Filename Prefix:", cx + cw / 2 + 4, wy + 24 + 50 + 2, 0xFFBDC1C6);
         }
+
+        // Live Apply Status Banner at bottom-left of Settings window
+        boolean recent = (System.currentTimeMillis() - lastFeedbackTimeMs) < 4000;
+        int statusCol = recent ? 0xFF2ECC71 : 0xFF9AA0A6;
+        context.drawTextWithShadow(this.textRenderer, liveFeedbackText, cx + 2, wy + winH - 18, statusCol);
 
         super.render(context, mouseX, mouseY, delta);
     }

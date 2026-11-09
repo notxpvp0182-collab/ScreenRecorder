@@ -182,7 +182,8 @@ public class RecorderScreen extends Screen {
         int canvasY = previewAreaY + (previewAreaH - canvasH) / 2;
 
         // Draw Floating OBS Window Frame AROUND the crystal-clear 60 FPS Live Preview Viewport!
-        context.fill(winX, winY, winX + winW, canvasY, 0xFF1D1F26); // Above preview
+        context.fill(winX, winY, winX + winW, winY + winH, 0xFF1D1F26);
+        LivePreviewRenderer.renderFullScreenPreview(context, canvasX, canvasY, canvasW, canvasH); // Above preview
         context.fill(winX, canvasY + canvasH, winX + winW, winY + winH, 0xFF1D1F26); // Below preview
         context.fill(winX, canvasY, canvasX, canvasY + canvasH, 0xFF1D1F26); // Left of preview
         context.fill(canvasX + canvasW, canvasY, winX + winW, canvasY + canvasH, 0xFF1D1F26); // Right of preview

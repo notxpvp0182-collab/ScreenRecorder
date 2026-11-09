@@ -5,11 +5,12 @@ import com.ahmed.screenrecorder.ScreenRecorderClient;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.ByteBuffer;
 
 public class FFmpegEncoder {
-    public static final int STREAM_FPS = 20;
+    public static final int REALTIME_FPS = 10;
     private NativeMjpegMp4Muxer h264Muxer;
+    private int targetW = 640;
+    private int targetH = 360;
     private final OutputStream silentPipe = new OutputStream() {
         @Override
         public void write(int b) {}
@@ -22,28 +23,26 @@ public class FFmpegEncoder {
     }
 
     public void start(File outputFile, int sourceWidth, int sourceHeight) throws IOException {
-        // 854x480 (FWVGA 16:9) encodes in < 12ms per frame in Pure Java H.264,
-        // guaranteeing true 20 FPS real-time encoding without ever lagging the game or dropping seconds!
-        int targetW = 854;
-        int targetH = 480;
+        this.targetW = 640;
+        this.targetH = 360;
         if (sourceWidth > 0 && sourceHeight > 0) {
-            targetH = Math.max(240, ((targetW * sourceHeight) / sourceWidth / 2) * 2);
+            this.targetH = Math.max(240, ((this.targetW * sourceHeight) / sourceWidth / 2) * 2);
         }
 
-        this.h264Muxer = new NativeMjpegMp4Muxer(outputFile, targetW, targetH, STREAM_FPS);
-        ScreenRecorderClient.LOGGER.info("OBS H.264 Real-Time Encoder started ({}x{} @ {} FPS) -> {}",
-                targetW, targetH, STREAM_FPS, outputFile.getName());
+        this.h264Muxer = new NativeMjpegMp4Muxer(outputFile, targetW, targetH, REALTIME_FPS);
+        ScreenRecorderClient.LOGGER.info("OBS 1x Real-Time H.264 Encoder started ({}x{} @ {} FPS) -> {}",
+                targetW, targetH, REALTIME_FPS, outputFile.getName());
     }
 
-    public void updateFramePixels(ByteBuffer frameBuffer, int frameW, int frameH) {
-        if (h264Muxer != null) {
-            h264Muxer.convertRgbaToPicture(frameBuffer, frameW, frameH);
-        }
-    }
+    public int getTargetW() { return targetW; }
+    public int getTargetH() { return targetH; }
 
-    public void writeEncodedTickFrame() throws IOException {
+    public void updateAndWriteFrame(byte[] rgbBytes, int repeatCount) throws IOException {
         if (h264Muxer != null) {
-            h264Muxer.encodeCurrentPicture();
+            h264Muxer.loadRgbBytes(rgbBytes);
+            for (int i = 0; i < repeatCount; i++) {
+                h264Muxer.writeTickFrame(rgbBytes);
+            }
         }
     }
 
