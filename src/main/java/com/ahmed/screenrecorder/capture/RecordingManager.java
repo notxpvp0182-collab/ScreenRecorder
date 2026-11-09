@@ -2,25 +2,24 @@ package com.ahmed.screenrecorder.capture;
 
 import com.ahmed.screenrecorder.ScreenRecorderClient;
 import com.ahmed.screenrecorder.audio.AudioCaptureManager;
-import com.ahmed.screenrecorder.config.RecordingConfig;
+import com.ahmed.screenrecorder.audio.WavAudioTrackRecorder;
 import com.ahmed.screenrecorder.util.RecordingFileManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
 import net.minecraft.client.util.ScreenshotRecorder;
 import net.minecraft.text.Text;
-import org.lwjgl.BufferUtils;
-import org.lwjgl.opengl.GL11;
 
 import java.io.File;
 import java.io.OutputStream;
-import java.nio.ByteBuffer;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Single-File High-Definition Zero-Lag Recording Manager:
- * - Saves ONLY ONE .mp4 file in screen-recordings/ (embeds both HD video & audio inside that single file!)
- * - Zero FPS drop while recording: Render Thread only performs a single direct DMA glReadPixels every frame interval!
+ * Smooth Real-Time Buffered Recording Manager.
+ * Captures frames at a steady 15 FPS metronome into a lightweight ring buffer while playing,
+ * and smoothly encodes every frame into a 100% standard ISO MP4 file!
  */
 public class RecordingManager {
     private static final RecordingManager INSTANCE = new RecordingManager();
@@ -29,17 +28,20 @@ public class RecordingManager {
     private final AtomicBoolean paused = new AtomicBoolean(false);
     private final AtomicBoolean stopping = new AtomicBoolean(false);
     private final AtomicBoolean starting = new AtomicBoolean(false);
-    private final AtomicBoolean rawFrameWaiting = new AtomicBoolean(false);
     private final AtomicInteger renderProgressPct = new AtomicInteger(0);
 
+    private final FastFrameCaptureHandler fastGrabber = new FastFrameCaptureHandler();
     private final AudioCaptureManager audioCaptureManager = new AudioCaptureManager();
+    private final WavAudioTrackRecorder wavRecorder = new WavAudioTrackRecorder();
     private final PerformanceManager performanceManager = new PerformanceManager();
-    private SingleFileAvMp4Muxer singleMp4Muxer;
+    private FFmpegEncoder ffmpegEncoder;
 
-    private ByteBuffer directGlBuffer;
-    private volatile int capturedW = 1280;
-    private volatile int capturedH = 720;
-    private volatile long capturedElapsedMs = 0;
+    private record TimedRgbFrame(byte[] rgb, long elapsedMs) {}
+    private ArrayBlockingQueue<TimedRgbFrame> frameQueue;
+    private ArrayBlockingQueue<byte[]> freeBytePool;
+
+    private int captureW = 640;
+    private int captureH = 368;
     private Thread videoEncoderThread;
 
     private File currentOutputFile;
@@ -61,7 +63,7 @@ public class RecordingManager {
             return false;
         }
         starting.set(true);
-        setStatus("Starting HD Recorder...", false);
+        setStatus("Starting OBS Recorder...", false);
 
         Thread initThread = new Thread(() -> {
             try {
@@ -71,20 +73,26 @@ public class RecordingManager {
                     return;
                 }
 
-                RecordingConfig cfg = RecordingConfig.get();
                 MinecraftClient client = MinecraftClient.getInstance();
                 Framebuffer fb = client != null ? client.getFramebuffer() : null;
                 int srcW = (fb != null && fb.textureWidth > 0) ? fb.textureWidth : 1280;
                 int srcH = (fb != null && fb.textureHeight > 0) ? fb.textureHeight : 720;
 
-                int outW = Math.min(srcW, cfg.getTargetWidth());
-                int outH = Math.min(srcH, cfg.getTargetHeight());
-                if (srcW > 0 && srcH > 0) {
-                    outH = Math.max(360, ((outW * srcH) / srcW / 2) * 2);
-                }
-
                 currentOutputFile = RecordingFileManager.createUniqueRecordingFile();
-                singleMp4Muxer = new SingleFileAvMp4Muxer(currentOutputFile, outW, outH);
+                ffmpegEncoder = new FFmpegEncoder();
+                ffmpegEncoder.start(currentOutputFile, srcW, srcH);
+                wavRecorder.start(currentOutputFile);
+
+                captureW = ffmpegEncoder.getTargetW();
+                captureH = ffmpegEncoder.getTargetH();
+                int rgbBytes = captureW * captureH * 3;
+
+                // Pool of 16 pre-allocated frame buffers (~11 MB total) for smooth jitter-free capture
+                frameQueue = new ArrayBlockingQueue<>(16);
+                freeBytePool = new ArrayBlockingQueue<>(16);
+                for (int i = 0; i < 16; i++) {
+                    freeBytePool.offer(new byte[rgbBytes]);
+                }
                 performanceManager.initializePool(1024, 2);
 
                 audioCaptureManager.start(new OutputStream() {
@@ -92,10 +100,8 @@ public class RecordingManager {
                     public void write(int b) {}
                     @Override
                     public void write(byte[] b, int off, int len) {
-                        if (recording.get() && !paused.get() && singleMp4Muxer != null) {
-                            try {
-                                singleMp4Muxer.writeAudioPcmChunk(b, len);
-                            } catch (Exception ignored) {}
+                        if (recording.get() && !paused.get()) {
+                            wavRecorder.writePcmChunk(b, len);
                         }
                     }
                 });
@@ -104,19 +110,18 @@ public class RecordingManager {
                 pausedAccumulatedMs = 0;
                 finalActiveDurationMs = 0;
                 paused.set(false);
-                rawFrameWaiting.set(false);
                 lastGlGrabTimeMs = 0L;
                 recording.set(true);
 
-                videoEncoderThread = new Thread(this::runFastBackgroundMuxLoop, "OBS-HD-Muxer");
+                videoEncoderThread = new Thread(this::runSmoothPacedEncodeWorker, "OBS-SmoothEncoder");
                 videoEncoderThread.setDaemon(true);
-                videoEncoderThread.setPriority(Thread.MIN_PRIORITY + 2);
+                videoEncoderThread.setPriority(Thread.NORM_PRIORITY - 1);
                 videoEncoderThread.start();
 
-                setStatus("Recording HD: " + currentOutputFile.getName(), false);
+                setStatus("Recording: " + currentOutputFile.getName(), false);
             } catch (Exception e) {
                 ScreenRecorderClient.LOGGER.error("Start failed", e);
-                setStatus("Start error: " + e.getMessage(), true);
+                setStatus("Start failed: " + e.getMessage(), true);
                 cleanupFailedStart();
             } finally {
                 starting.set(false);
@@ -131,7 +136,7 @@ public class RecordingManager {
         if (!recording.get() || stopping.get()) return;
         if (paused.compareAndSet(false, true)) {
             pauseStartMs = System.currentTimeMillis();
-            setStatus("Recording Paused", false);
+            setStatus("Paused", false);
         } else if (paused.compareAndSet(true, false)) {
             pausedAccumulatedMs += (System.currentTimeMillis() - pauseStartMs);
             setStatus("Recording: " + currentOutputFile.getName(), false);
@@ -157,11 +162,12 @@ public class RecordingManager {
         stopping.set(true);
         recording.set(false);
         paused.set(false);
-        renderProgressPct.set(20);
-        setStatus("Rendering MP4 (20%)...", false);
+        renderProgressPct.set(15);
+        setStatus("Rendering MP4 Video (15%)...", false);
 
-        Thread stopThread = new Thread(this::performSafeStop, "OBS-StopThread");
-        stopThread.setDaemon(true);
+        Thread stopThread = new Thread(this::performSafeStopWithProgress, "OBS-Finalizer");
+        stopThread.setDaemon(false);
+        stopThread.setPriority(Thread.NORM_PRIORITY);
         stopThread.start();
     }
 
@@ -173,87 +179,85 @@ public class RecordingManager {
         }
     }
 
-    /**
-     * Render Thread Hook: Performs ONLY 1 fast direct buffer read when the background worker is free.
-     * Zero pixel loops on the Render Thread = 0% FPS drop!
-     */
     public void onFrameRendered() {
         if (!recording.get() || paused.get() || stopping.get()) return;
-        if (rawFrameWaiting.get()) return;
+        if (freeBytePool == null || frameQueue == null) return;
 
-        int targetFps = Math.max(20, Math.min(60, RecordingConfig.get().getTargetFps()));
-        long intervalMs = Math.max(16L, 1000L / targetFps);
+        long intervalMs = 1000L / FFmpegEncoder.SMOOTH_STREAM_FPS; // 66ms (15 FPS smooth cadence)
         long nowMs = System.currentTimeMillis();
         if (nowMs - lastGlGrabTimeMs < intervalMs) {
             return;
         }
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        Framebuffer fb = client.getFramebuffer();
-        if (fb == null || fb.textureWidth <= 0 || fb.textureHeight <= 0) return;
-
-        int w = fb.textureWidth;
-        int h = fb.textureHeight;
-        int needed = w * h * 4;
-        if (directGlBuffer == null || directGlBuffer.capacity() < needed) {
-            directGlBuffer = BufferUtils.createByteBuffer(needed);
-        }
+        byte[] buf = freeBytePool.poll();
+        if (buf == null) return; // Pool busy, skip without lagging game
 
         lastGlGrabTimeMs = nowMs;
-        directGlBuffer.clear();
-        GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 1);
-        GL11.glReadPixels(0, 0, w, h, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, directGlBuffer);
-
-        capturedW = w;
-        capturedH = h;
-        capturedElapsedMs = Math.max(1L, nowMs - recordingStartTimeMs - pausedAccumulatedMs);
-        rawFrameWaiting.set(true);
+        if (fastGrabber.captureScaledRgbFrame(buf, captureW, captureH)) {
+            long elapsed = Math.max(1L, nowMs - recordingStartTimeMs - pausedAccumulatedMs);
+            if (!frameQueue.offer(new TimedRgbFrame(buf, elapsed))) {
+                freeBytePool.offer(buf);
+            }
+        } else {
+            freeBytePool.offer(buf);
+        }
     }
 
-    private void runFastBackgroundMuxLoop() {
+    /**
+     * Smoothly encodes every captured frame in exact wall-clock order so the video plays
+     * continuously without stuttering or freezing!
+     */
+    private void runSmoothPacedEncodeWorker() {
+        final int fps = FFmpegEncoder.SMOOTH_STREAM_FPS;
+        long totalWrittenFrames = 0;
+
         try {
-            while (recording.get() || rawFrameWaiting.get()) {
-                if (paused.get()) {
-                    Thread.sleep(25);
-                    continue;
-                }
-                if (rawFrameWaiting.get()) {
-                    if (singleMp4Muxer != null && directGlBuffer != null) {
-                        singleMp4Muxer.writeVideoFrame(directGlBuffer, capturedW, capturedH, capturedElapsedMs);
+            while (recording.get() || (frameQueue != null && !frameQueue.isEmpty())) {
+                TimedRgbFrame item = frameQueue != null ? frameQueue.poll(30, TimeUnit.MILLISECONDS) : null;
+                if (item != null) {
+                    long targetFrameIdx = Math.max(totalWrittenFrames + 1, (item.elapsedMs() * fps) / 1000L);
+                    int count = (int) Math.min(3L, Math.max(1L, targetFrameIdx - totalWrittenFrames));
+
+                    ffmpegEncoder.writePacedFrames(item.rgb(), count);
+                    totalWrittenFrames += count;
+                    for (int i = 0; i < count; i++) {
                         performanceManager.recordFrameEncoded();
                     }
-                    rawFrameWaiting.set(false);
-                } else {
-                    Thread.sleep(5);
+
+                    if (freeBytePool != null) {
+                        freeBytePool.offer(item.rgb());
+                    }
                 }
             }
         } catch (Exception e) {
-            ScreenRecorderClient.LOGGER.error("Background mux error", e);
+            ScreenRecorderClient.LOGGER.error("Smooth encoder worker error", e);
         }
     }
 
-    private void performSafeStop() {
+    private void performSafeStopWithProgress() {
         try {
-            renderProgressPct.set(45);
+            renderProgressPct.set(30);
+            setStatus("Saving Audio Track (30%)...", false);
             audioCaptureManager.stop();
+            wavRecorder.finish();
 
-            renderProgressPct.set(75);
+            renderProgressPct.set(60);
+            setStatus("Rendering Video Frames (60%)...", false);
             if (videoEncoderThread != null && Thread.currentThread() != videoEncoderThread) {
                 try {
-                    videoEncoderThread.join(3000);
+                    videoEncoderThread.join(15000);
                 } catch (InterruptedException ignored) {}
             }
 
-            if (singleMp4Muxer != null) {
-                try {
-                    singleMp4Muxer.finish(this.finalActiveDurationMs);
-                } catch (Exception ignored) {}
-                singleMp4Muxer = null;
+            renderProgressPct.set(85);
+            setStatus("Finalizing MP4 Container (85%)...", false);
+            if (ffmpegEncoder != null) {
+                ffmpegEncoder.stopAndFinalize();
+                ffmpegEncoder = null;
             }
 
-            // If Native FFmpeg is installed in config/obs_ffmpeg_engine, optionally transcode/optimize in background
             renderProgressPct.set(100);
-            if (currentOutputFile != null && currentOutputFile.exists()) {
+            if (currentOutputFile != null && currentOutputFile.exists() && currentOutputFile.length() > 512) {
                 double sizeMb = currentOutputFile.length() / (1024.0 * 1024.0);
                 long sec = Math.round(this.finalActiveDurationMs / 1000.0);
                 String savedMsg = String.format("Saved: %s (%ds, %.2f MB)", currentOutputFile.getName(), sec, sizeMb);
@@ -266,6 +270,8 @@ public class RecordingManager {
                 setStatus("Recording saved.", false);
             }
         } finally {
+            frameQueue = null;
+            freeBytePool = null;
             stopping.set(false);
         }
     }
@@ -276,9 +282,10 @@ public class RecordingManager {
         stopping.set(false);
         starting.set(false);
         audioCaptureManager.stop();
-        if (singleMp4Muxer != null) {
-            try { singleMp4Muxer.finish(1000L); } catch (Exception ignored) {}
-            singleMp4Muxer = null;
+        wavRecorder.finish();
+        if (ffmpegEncoder != null) {
+            ffmpegEncoder.stopAndFinalize();
+            ffmpegEncoder = null;
         }
     }
 
@@ -287,7 +294,7 @@ public class RecordingManager {
             long stopMoment = paused.get() ? pauseStartMs : System.currentTimeMillis();
             this.finalActiveDurationMs = Math.max(1000L, stopMoment - recordingStartTimeMs - pausedAccumulatedMs);
             recording.set(false);
-            performSafeStop();
+            performSafeStopWithProgress();
         }
     }
 
