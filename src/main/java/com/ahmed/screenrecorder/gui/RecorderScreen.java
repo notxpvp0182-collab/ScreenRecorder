@@ -2,6 +2,7 @@ package com.ahmed.screenrecorder.gui;
 
 import com.ahmed.screenrecorder.capture.RecordingManager;
 import com.ahmed.screenrecorder.config.RecordingConfig;
+import com.ahmed.screenrecorder.util.RecordingFileManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
@@ -13,19 +14,19 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Authentic OBS Studio 30 Main Window:
- * - Real-Time Transparent Live Game Preview Canvas (with Red OBS Resize Handles & zero text clutter)
- * - Fully Interactive Scenes Dock (+ Add, - Remove, Click to switch)
- * - Fully Interactive Sources Dock (Toggle Game Capture, Game Audio, Microphone, + / - / Gear)
- * - Live Drag-able Audio Mixer Volume Sliders & Real-Time Audio Level Meters
- * - All 6 Controls Dock Buttons 100% functional
+ * Complete OBS Studio 30 Interface:
+ * - Real-time Live Display Capture Preview
+ * - Pause/Resume Recording Button next to Start/Stop Recording
+ * - Instant Screenshot & Live Stats Overlay (CPU/RAM, Disk Space, FPS, Dropped Frames)
+ * - Interactive Scenes, Sources, Audio Mixer Sliders, and Transitions
  */
 public class RecorderScreen extends Screen {
     private final Screen parent;
-    private static final List<String> SCENES = new ArrayList<>(Arrays.asList("Main Scene", "Gameplay Only"));
+    private static final List<String> SCENES = new ArrayList<>(Arrays.asList("Main Scene", "Display Capture", "Gameplay Only"));
     private static int selectedScene = 0;
     private static int selectedSource = 0;
     private static boolean studioMode = false;
+    private static boolean showStatsWindow = false;
 
     private boolean draggingDesktopVol = false;
     private boolean draggingMicVol = false;
@@ -46,14 +47,26 @@ public class RecorderScreen extends Screen {
         int dockY = this.height - bottomBarH - dockAreaH - 2;
         int toolbarY = dockY - 18;
 
-        // Source Context Toolbar (Properties & Filters)
-        this.addDrawableChild(new ThemeButton(margin + 96, toolbarY + 2, 68, 12,
+        // Context Toolbar: Properties | Filters | Screenshot | Stats
+        int tbX = margin + 92;
+        this.addDrawableChild(new ThemeButton(tbX, toolbarY + 2, 62, 12,
                 UIHelper.Icon.SETTINGS, Text.literal("Properties"),
                 () -> this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.VIDEO))));
 
-        this.addDrawableChild(new ThemeButton(margin + 168, toolbarY + 2, 58, 12,
+        this.addDrawableChild(new ThemeButton(tbX + 65, toolbarY + 2, 52, 12,
                 UIHelper.Icon.FILTERS, Text.literal("Filters"),
                 () -> this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.AUDIO))));
+
+        this.addDrawableChild(new ThemeButton(tbX + 120, toolbarY + 2, 62, 12,
+                UIHelper.Icon.VIDEO, Text.literal("Screenshot"),
+                mgr::takeScreenshot));
+
+        this.addDrawableChild(new ThemeButton(tbX + 185, toolbarY + 2, 48, 12,
+                UIHelper.Icon.PERFORMANCE, Text.literal("Stats"),
+                () -> {
+                    showStatsWindow = !showStatsWindow;
+                    this.clearAndInit();
+                }, showStatsWindow));
 
         int totalDockW = this.width - margin * 2;
         int gap = 3;
@@ -61,7 +74,7 @@ public class RecorderScreen extends Screen {
         int controlsX = margin + (colW + gap) * 4;
         int controlsW = totalDockW - (colW + gap) * 4;
 
-        // Controls Dock (6 Functional OBS Studio Buttons)
+        // Controls Dock (6 Rows, Row 1 splits into Stop + Pause when recording!)
         int btnX = controlsX + 4;
         int btnW = controlsW - 8;
         int availBtnH = dockAreaH - 17;
@@ -69,55 +82,55 @@ public class RecorderScreen extends Screen {
         int stepY = btnH + 2;
         int curY = dockY + 15;
 
-        // 1. Start / Stop Recording
-        this.addDrawableChild(new ThemeButton(btnX, curY, btnW, btnH,
-                mgr.isRecording() ? UIHelper.Icon.STOP : UIHelper.Icon.RECORD,
-                Text.literal(mgr.isRecording() ? "Stop Recording" : "Start Recording"),
-                () -> {
-                    mgr.toggleRecording();
-                    this.clearAndInit();
-                },
-                mgr.isRecording()
-        ));
+        if (mgr.isRecording()) {
+            int stopW = btnW - 20;
+            this.addDrawableChild(new ThemeButton(btnX, curY, stopW, btnH,
+                    UIHelper.Icon.STOP, Text.literal("Stop Rec"),
+                    () -> {
+                        mgr.stopRecording();
+                        this.clearAndInit();
+                    }, true));
+            this.addDrawableChild(new ThemeButton(btnX + stopW + 2, curY, 18, btnH,
+                    mgr.isPaused() ? UIHelper.Icon.PLAY : UIHelper.Icon.PAUSE, Text.empty(),
+                    () -> {
+                        mgr.togglePause();
+                        this.clearAndInit();
+                    }, mgr.isPaused()));
+        } else {
+            this.addDrawableChild(new ThemeButton(btnX, curY, btnW, btnH,
+                    UIHelper.Icon.RECORD, Text.literal("Start Recording"),
+                    () -> {
+                        mgr.startRecording();
+                        this.clearAndInit();
+                    }, false));
+        }
 
-        // 2. Recordings Browser & Player
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY, btnW, btnH,
                 UIHelper.Icon.FOLDER, Text.literal("Recordings"),
-                () -> this.client.setScreen(new RecordingsScreen(this))
-        ));
+                () -> this.client.setScreen(new RecordingsScreen(this))));
 
-        // 3. Quick Mic Toggle
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 2, btnW, btnH,
                 UIHelper.Icon.MICROPHONE, Text.literal("Mic: " + (cfg.microphoneEnabled ? "ON" : "OFF")),
                 () -> {
                     cfg.microphoneEnabled = !cfg.microphoneEnabled;
                     RecordingConfig.save();
                     this.clearAndInit();
-                },
-                cfg.microphoneEnabled
-        ));
+                }, cfg.microphoneEnabled));
 
-        // 4. Studio Mode Toggle (Splits Live Preview into Preview + Program like real OBS)
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 3, btnW, btnH,
                 UIHelper.Icon.VIDEO, Text.literal("Studio Mode"),
                 () -> {
                     studioMode = !studioMode;
                     this.clearAndInit();
-                },
-                studioMode
-        ));
+                }, studioMode));
 
-        // 5. OBS Settings Dialog
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 4, btnW, btnH,
                 UIHelper.Icon.SETTINGS, Text.literal("Settings"),
-                () -> this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.GENERAL))
-        ));
+                () -> this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.GENERAL))));
 
-        // 6. Exit
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 5, btnW, btnH,
                 UIHelper.Icon.CLOSE, Text.literal("Exit"),
-                this::close
-        ));
+                this::close));
     }
 
     @Override
@@ -133,7 +146,6 @@ public class RecorderScreen extends Screen {
         int previewAreaY = 14;
         int previewAreaH = Math.max(40, toolbarY - previewAreaY);
 
-        // Compute 16:9 Live Preview Viewport Coordinates
         int pad = 6;
         int availW = this.width - margin * 2 - pad * 2;
         int availH = previewAreaH - pad * 2;
@@ -146,14 +158,13 @@ public class RecorderScreen extends Screen {
         int canvasX = (this.width - canvasW) / 2;
         int canvasY = previewAreaY + (previewAreaH - canvasH) / 2;
 
-        // Fill OBS Dark Slate AROUND the Live Preview Canvas so the actual live Minecraft game shines through!
-        context.fill(0, 0, this.width, canvasY, 0xFF1D1F26); // Top surround
-        context.fill(0, canvasY + canvasH, this.width, this.height, 0xFF1D1F26); // Bottom surround
-        context.fill(0, canvasY, canvasX, canvasY + canvasH, 0xFF1D1F26); // Left surround
-        context.fill(canvasX + canvasW, canvasY, this.width, canvasY + canvasH, 0xFF1D1F26); // Right surround
+        // Fill OBS Dark Slate around the transparent Live Display Viewport
+        context.fill(0, 0, this.width, canvasY, 0xFF1D1F26);
+        context.fill(0, canvasY + canvasH, this.width, this.height, 0xFF1D1F26);
+        context.fill(0, canvasY, canvasX, canvasY + canvasH, 0xFF1D1F26);
+        context.fill(canvasX + canvasW, canvasY, this.width, canvasY + canvasH, 0xFF1D1F26);
 
-        // OBS Red Transform Bounding Box & Corner Handles around the Live Preview
-        int boundColor = mgr.isRecording() ? 0xFFFF3B30 : 0xFFE53935;
+        int boundColor = mgr.isRecording() ? (mgr.isPaused() ? 0xFFF1C40F : 0xFFFF3B30) : 0xFFE53935;
         UIHelper.drawBorder(context, canvasX, canvasY, canvasW, canvasH, boundColor);
         drawObsTransformHandles(context, canvasX, canvasY, canvasW, canvasH, boundColor);
 
@@ -161,7 +172,12 @@ public class RecorderScreen extends Screen {
             int midX = canvasX + canvasW / 2;
             context.fill(midX, canvasY, midX + 1, canvasY + canvasH, 0xFFE53935);
             context.drawTextWithShadow(this.textRenderer, "Preview", canvasX + 6, canvasY + 4, 0xFFDADCE0);
-            context.drawTextWithShadow(this.textRenderer, "Program", midX + 6, canvasY + 4, 0xFFFF5252);
+            context.drawTextWithShadow(this.textRenderer, "Program (Live)", midX + 6, canvasY + 4, 0xFFFF5252);
+        }
+
+        // Optional Live OBS Stats Floating Panel
+        if (showStatsWindow) {
+            renderObsStatsPanel(context, canvasX + 6, canvasY + 6, mgr, cfg);
         }
 
         // Top Window Titlebar
@@ -176,10 +192,10 @@ public class RecorderScreen extends Screen {
         context.fill(margin, toolbarY, this.width - margin, toolbarY + 16, 0xFF262932);
         UIHelper.drawBorder(context, margin, toolbarY, this.width - margin * 2, 16, 0xFF353844);
         UIHelper.drawIcon(context, UIHelper.Icon.VIDEO, margin + 5, toolbarY + 4, 0xFFE53935);
-        String srcLabel = selectedSource == 0 ? "Game Capture" : (selectedSource == 1 ? "Desktop Audio" : "Mic/Aux");
+        String srcLabel = selectedSource == 0 ? "Display Capture" : (selectedSource == 1 ? "Desktop Audio" : "Mic/Aux");
         context.drawTextWithShadow(this.textRenderer, srcLabel, margin + 16, toolbarY + 4, 0xFFDADCE0);
 
-        // 5 Bottom Docks (Scenes | Sources | Audio Mixer | Scene Transitions | Controls)
+        // 5 Bottom Docks
         int totalDockW = this.width - margin * 2;
         int gap = 3;
         int colW = (totalDockW - gap * 4) / 5;
@@ -195,7 +211,6 @@ public class RecorderScreen extends Screen {
             context.drawTextWithShadow(this.textRenderer, dockTitles[i], dx + 4, dockY + 3, 0xFFE8EAED);
 
             if (i == 0) {
-                // Interactive Scenes List
                 for (int s = 0; s < SCENES.size() && s < 4; s++) {
                     int sy = dockY + 15 + s * 13;
                     if (s == selectedScene) {
@@ -205,8 +220,7 @@ public class RecorderScreen extends Screen {
                 }
                 drawDockMiniToolbar(context, dx + 2, dockY + dockAreaH - 13, dw - 4);
             } else if (i == 1) {
-                // Interactive Sources List
-                String[] srcs = {"Game Capture", "Desktop Audio", "Mic/Aux"};
+                String[] srcs = {"Display Capture", "Desktop Audio", "Mic/Aux"};
                 boolean[] states = {true, cfg.gameAudioEnabled, cfg.microphoneEnabled};
                 UIHelper.Icon[] icons = {UIHelper.Icon.VIDEO, UIHelper.Icon.AUDIO, UIHelper.Icon.MICROPHONE};
                 for (int s = 0; s < srcs.length; s++) {
@@ -220,11 +234,11 @@ public class RecorderScreen extends Screen {
                 }
                 drawDockMiniToolbar(context, dx + 2, dockY + dockAreaH - 13, dw - 4);
             } else if (i == 2) {
-                renderInteractiveAudioMixer(context, dx + 4, dockY + 16, dw - 8, cfg, mgr.isRecording());
+                renderInteractiveAudioMixer(context, dx + 4, dockY + 16, dw - 8, cfg, mgr.isRecording() && !mgr.isPaused());
             } else if (i == 3) {
                 context.fill(dx + 4, dockY + 17, dx + dw - 4, dockY + 29, 0xFF323642);
                 UIHelper.drawBorder(context, dx + 4, dockY + 17, dw - 8, 12, 0xFF454A59);
-                context.drawTextWithShadow(this.textRenderer, "Fade", dx + 7, dockY + 19, 0xFFFFFFFF);
+                context.drawTextWithShadow(this.textRenderer, "Cut / Fade", dx + 7, dockY + 19, 0xFFFFFFFF);
 
                 context.drawTextWithShadow(this.textRenderer, "Duration", dx + 4, dockY + 34, 0xFFBDC1C6);
                 context.fill(dx + 4, dockY + 45, dx + dw - 4, dockY + 57, 0xFF191B21);
@@ -246,6 +260,24 @@ public class RecorderScreen extends Screen {
         RecordingIndicator.renderCleanOverlay(context);
     }
 
+    private void renderObsStatsPanel(DrawContext ctx, int x, int y, RecordingManager mgr, RecordingConfig cfg) {
+        int w = 165;
+        int h = 58;
+        ctx.fill(x, y, x + w, y + h, 0xD9191B22);
+        UIHelper.drawBorder(ctx, x, y, w, h, 0xFF3B82F6);
+
+        Runtime rt = Runtime.getRuntime();
+        long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+        long freeDiskGb = RecordingFileManager.getRecordingsDir().getUsableSpace() / (1024L * 1024L * 1024L);
+        int dropped = mgr.getPerformanceManager().getDroppedFrames();
+        int encoded = mgr.getPerformanceManager().getEncodedFrames();
+
+        ctx.drawTextWithShadow(this.textRenderer, "OBS Telemetry Stats", x + 5, y + 4, 0xFF60A5FA);
+        ctx.drawTextWithShadow(this.textRenderer, "Memory: " + usedMb + " MB | Disk: " + freeDiskGb + " GB", x + 5, y + 16, 0xFFE8EAED);
+        ctx.drawTextWithShadow(this.textRenderer, "Encoded: " + encoded + " | Dropped: " + dropped, x + 5, y + 28, 0xFFBDC1C6);
+        ctx.drawTextWithShadow(this.textRenderer, "Encoder: H.264 (" + cfg.getTargetBitrateKbps() + " kbps)", x + 5, y + 40, 0xFF2ECC71);
+    }
+
     private void drawObsTransformHandles(DrawContext ctx, int x, int y, int w, int h, int color) {
         int s = 3;
         ctx.fill(x - 1, y - 1, x + s, y + s, color);
@@ -265,22 +297,16 @@ public class RecorderScreen extends Screen {
     }
 
     private void renderInteractiveAudioMixer(DrawContext context, int x, int y, int w, RecordingConfig cfg, boolean live) {
-        float jitter = live ? (float) (Math.sin(System.currentTimeMillis() * 0.02) * 0.06) : 0.0f;
+        float jitter = live ? (float) (Math.sin(System.currentTimeMillis() * 0.025) * 0.06) : 0.0f;
 
-        String dDb = cfg.gameAudioEnabled ? String.format("%.1f dB", (cfg.gameVolume - 100) * 0.4f) : "-inf dB";
-        context.drawTextWithShadow(this.textRenderer, "Desktop Audio", x, y, 0xFFE8EAED);
+        context.drawTextWithShadow(this.textRenderer, "Desktop Audio (" + cfg.gameVolume + "%)", x, y, 0xFFE8EAED);
         drawDbMeterBar(context, x, y + 10, w, cfg.gameAudioEnabled ? Math.max(0f, (cfg.gameVolume / 100.0f) + jitter) : 0.0f);
         drawBlueVolumeSlider(context, x, y + 17, w, cfg.gameVolume / 100.0f);
 
         int micY = y + 29;
-        context.drawTextWithShadow(this.textRenderer, "Mic/Aux (" + truncate(cfg.microphoneDevice, 8) + ")", x, micY, 0xFFE8EAED);
+        context.drawTextWithShadow(this.textRenderer, "Mic/Aux (" + cfg.microphoneVolume + "%)", x, micY, 0xFFE8EAED);
         drawDbMeterBar(context, x, micY + 10, w, cfg.microphoneEnabled ? Math.max(0f, (cfg.microphoneVolume / 100.0f) + jitter) : 0.0f);
         drawBlueVolumeSlider(context, x, micY + 17, w, cfg.microphoneVolume / 100.0f);
-    }
-
-    private String truncate(String s, int len) {
-        if (s == null) return "Def";
-        return s.length() <= len ? s : s.substring(0, len);
     }
 
     private void drawDbMeterBar(DrawContext context, int x, int y, int w, float activeRatio) {
@@ -315,7 +341,6 @@ public class RecorderScreen extends Screen {
         int gap = 3;
         int colW = (totalDockW - gap * 4) / 5;
 
-        // 1. Scenes Dock Clicks
         int scenesX = margin;
         if (mx >= scenesX && mx <= scenesX + colW && my >= dockY + 15 && my <= dockY + dockAreaH) {
             if (my >= dockY + dockAreaH - 13) {
@@ -334,7 +359,6 @@ public class RecorderScreen extends Screen {
             return true;
         }
 
-        // 2. Sources Dock Clicks
         int sourcesX = margin + colW + gap;
         if (mx >= sourcesX && mx <= sourcesX + colW && my >= dockY + 15 && my <= dockY + dockAreaH) {
             int idx = (int) ((my - (dockY + 15)) / 13);
@@ -348,7 +372,6 @@ public class RecorderScreen extends Screen {
             return true;
         }
 
-        // 3. Audio Mixer Sliders Click & Drag
         int mixerX = margin + (colW + gap) * 2 + 4;
         int mixerW = colW - 8;
         int dSliderY = dockY + 16 + 17;

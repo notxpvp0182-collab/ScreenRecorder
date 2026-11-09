@@ -6,6 +6,7 @@ import com.ahmed.screenrecorder.config.RecordingConfig;
 import com.ahmed.screenrecorder.util.RecordingFileManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
+import net.minecraft.client.util.ScreenshotRecorder;
 import net.minecraft.text.Text;
 
 import java.io.File;
@@ -15,13 +16,15 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Coordinates Video Capture, Audio Capture, Frame Pacing, Background Encoding,
- * and Crash-Safe Finalization.
+ * OBS Studio Recording Engine:
+ * Supports Full Display Capture (Main Menu, Settings, Worlds, HUD, GUIs),
+ * Pause/Resume Recording, Instant Screenshot, and Safe MP4 Finalization.
  */
 public class RecordingManager {
     private static final RecordingManager INSTANCE = new RecordingManager();
 
     private final AtomicBoolean recording = new AtomicBoolean(false);
+    private final AtomicBoolean paused = new AtomicBoolean(false);
     private final AtomicBoolean stopping = new AtomicBoolean(false);
 
     private final VideoCaptureManager videoCaptureManager = new VideoCaptureManager();
@@ -31,15 +34,16 @@ public class RecordingManager {
 
     private ArrayBlockingQueue<ByteBuffer> encodeQueue;
     private Thread videoEncoderThread;
-    private ByteBuffer lastFrameBackup;
 
     private File currentOutputFile;
     private int sessionSourceWidth;
     private int sessionSourceHeight;
     private long recordingStartTimeMs;
+    private long pausedAccumulatedMs = 0;
+    private long pauseStartMs = 0;
     private long lastCapturedFrameNs;
 
-    private String lastStatusMessage = "OBS Engine Ready (In-Built MP4 + FFmpeg)";
+    private String lastStatusMessage = "OBS Ready — Display & Game Capture Active";
     private boolean lastStatusIsError = false;
 
     public static RecordingManager getInstance() {
@@ -53,37 +57,26 @@ public class RecordingManager {
 
         RecordingConfig cfg = RecordingConfig.get();
 
-        // 1. Validate FFmpeg availability
-        if (false) {
-            setStatus("FFmpeg encoder is unavailable. Check FFmpeg installation.", true);
-            ScreenRecorderClient.LOGGER.error("Recording could not start: FFmpeg not found.");
-            return false;
-        }
-
-        // 2. Validate Disk Space
         if (!RecordingFileManager.hasEnoughDiskSpace()) {
-            setStatus("Not enough disk space.", true);
-            ScreenRecorderClient.LOGGER.error("Recording could not start: Insufficient disk space.");
+            setStatus("Not enough disk space (< 250 MB).", true);
             return false;
         }
 
-        // 3. Validate Framebuffer
         MinecraftClient client = MinecraftClient.getInstance();
         Framebuffer fb = client.getFramebuffer();
         if (fb == null || fb.textureWidth <= 0 || fb.textureHeight <= 0) {
-            setStatus("Recording could not start: Invalid window resolution.", true);
+            setStatus("Display framebuffer not ready.", true);
             return false;
         }
 
         this.sessionSourceWidth = fb.textureWidth;
         this.sessionSourceHeight = fb.textureHeight;
         int frameBytes = sessionSourceWidth * sessionSourceHeight * 4;
-        int queueCapacity = Math.max(4, Math.min(30, cfg.maxFrameQueueSize));
+        int queueCapacity = Math.max(6, Math.min(24, cfg.maxFrameQueueSize));
 
         try {
             performanceManager.initializePool(frameBytes, queueCapacity + 2);
             encodeQueue = new ArrayBlockingQueue<>(queueCapacity);
-            lastFrameBackup = ByteBuffer.allocateDirect(frameBytes);
 
             currentOutputFile = RecordingFileManager.createUniqueRecordingFile();
             ffmpegEncoder = new FFmpegEncoder();
@@ -92,22 +85,43 @@ public class RecordingManager {
             audioCaptureManager.start(ffmpegEncoder.getAudioOutputStream());
 
             recordingStartTimeMs = System.currentTimeMillis();
+            pausedAccumulatedMs = 0;
+            paused.set(false);
             lastCapturedFrameNs = System.nanoTime();
             recording.set(true);
 
-            videoEncoderThread = new Thread(this::runVideoEncodeLoop, "ScreenRecorder-VideoEncoder");
+            videoEncoderThread = new Thread(this::runVideoEncodeLoop, "OBS-VideoEncoder");
             videoEncoderThread.setDaemon(true);
             PerformanceManager.applyThreadPriority(videoEncoderThread);
             videoEncoderThread.start();
 
-            setStatus("Recording in progress: " + currentOutputFile.getName(), false);
-            ScreenRecorderClient.LOGGER.info("Recording started: {}", currentOutputFile.getName());
+            setStatus("Recording: " + currentOutputFile.getName(), false);
             return true;
         } catch (Exception e) {
-            ScreenRecorderClient.LOGGER.error("Recording failed to initialize.", e);
-            setStatus("Recording could not start: " + e.getMessage(), true);
+            ScreenRecorderClient.LOGGER.error("Recording failed to start", e);
+            setStatus("Error: " + e.getMessage(), true);
             cleanupFailedStart();
             return false;
+        }
+    }
+
+    public synchronized void togglePause() {
+        if (!recording.get() || stopping.get()) return;
+        if (paused.compareAndSet(false, true)) {
+            pauseStartMs = System.currentTimeMillis();
+            setStatus("Recording Paused", false);
+        } else if (paused.compareAndSet(true, false)) {
+            pausedAccumulatedMs += (System.currentTimeMillis() - pauseStartMs);
+            setStatus("Recording Resumed: " + currentOutputFile.getName(), false);
+        }
+    }
+
+    public void takeScreenshot() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client != null && client.getFramebuffer() != null) {
+            ScreenshotRecorder.saveScreenshot(client.runDirectory, client.getFramebuffer(), msg -> {
+                setStatus("Screenshot saved to screenshots/", false);
+            });
         }
     }
 
@@ -117,9 +131,10 @@ public class RecordingManager {
         }
         stopping.set(true);
         recording.set(false);
-        setStatus("Finalizing MP4 file...", false);
+        paused.set(false);
+        setStatus("Rendering & finalizing MP4...", false);
 
-        Thread stopThread = new Thread(this::performSafeStop, "ScreenRecorder-Finalizer");
+        Thread stopThread = new Thread(this::performSafeStop, "OBS-Finalizer");
         stopThread.setDaemon(false);
         stopThread.start();
     }
@@ -132,11 +147,8 @@ public class RecordingManager {
         }
     }
 
-    /**
-     * Invoked at the end of every rendered Minecraft frame on the Render Thread.
-     */
     public void onFrameRendered() {
-        if (!recording.get() || stopping.get()) return;
+        if (!recording.get() || paused.get() || stopping.get()) return;
 
         int targetFps = RecordingConfig.get().getTargetFps();
         long frameIntervalNs = 1_000_000_000L / targetFps;
@@ -150,9 +162,7 @@ public class RecordingManager {
         Framebuffer fb = client.getFramebuffer();
         if (fb == null) return;
 
-        // If window was resized during recording, safely stop and finalize current MP4
         if (fb.textureWidth != sessionSourceWidth || fb.textureHeight != sessionSourceHeight) {
-            ScreenRecorderClient.LOGGER.info("Window resolution changed during recording. Finalizing current segment safely.");
             stopRecording();
             return;
         }
@@ -177,41 +187,19 @@ public class RecordingManager {
     }
 
     private void runVideoEncodeLoop() {
-        int targetFps = RecordingConfig.get().getTargetFps();
-        long frameStepNs = 1_000_000_000L / targetFps;
-        long nextPtsNs = System.nanoTime();
-        boolean hasBackup = false;
-
         try {
             while (recording.get() || !encodeQueue.isEmpty()) {
-                ByteBuffer buf = encodeQueue.poll(10, TimeUnit.MILLISECONDS);
+                ByteBuffer buf = encodeQueue.poll(15, TimeUnit.MILLISECONDS);
                 if (buf != null) {
                     buf.rewind();
                     ffmpegEncoder.writeVideoFrame(buf);
                     performanceManager.recordFrameEncoded();
-
-                    // Store copy for constant frame rate pacing if game briefly lags
-                    buf.rewind();
-                    lastFrameBackup.clear();
-                    lastFrameBackup.put(buf);
-                    lastFrameBackup.flip();
-                    hasBackup = true;
-
                     performanceManager.releaseBuffer(buf);
-                    nextPtsNs = System.nanoTime() + frameStepNs;
-                } else if (recording.get() && hasBackup && System.nanoTime() >= nextPtsNs) {
-                    lastFrameBackup.rewind();
-                    ffmpegEncoder.writeVideoFrame(lastFrameBackup);
-                    nextPtsNs += frameStepNs;
                 }
             }
         } catch (Exception e) {
-            if (recording.get()) {
-                ScreenRecorderClient.LOGGER.error("Encoder failure during recording.", e);
-                setStatus("Encoder failure: Recording stopped.", true);
-                recording.set(false);
-                performSafeStop();
-            }
+            ScreenRecorderClient.LOGGER.error("Encoder error", e);
+            recording.set(false);
         }
     }
 
@@ -221,7 +209,7 @@ public class RecordingManager {
 
             if (videoEncoderThread != null && Thread.currentThread() != videoEncoderThread) {
                 try {
-                    videoEncoderThread.join(4000);
+                    videoEncoderThread.join(6000);
                 } catch (InterruptedException ignored) {}
             }
 
@@ -231,16 +219,13 @@ public class RecordingManager {
             }
 
             performanceManager.cleanup();
-            lastFrameBackup = null;
 
             if (currentOutputFile != null && currentOutputFile.exists()) {
-                String savedMsg = "Recording saved: " + currentOutputFile.getName();
+                String savedMsg = "MP4 Saved: " + currentOutputFile.getName();
                 setStatus(savedMsg, false);
-                ScreenRecorderClient.LOGGER.info(savedMsg);
-
                 MinecraftClient client = MinecraftClient.getInstance();
                 if (client != null && client.player != null) {
-                    client.execute(() -> client.player.sendMessage(Text.literal("§c[Screen Recorder] §f" + savedMsg), false));
+                    client.execute(() -> client.player.sendMessage(Text.literal("§9[OBS] §f" + savedMsg), false));
                 }
             } else {
                 setStatus("Recording stopped.", false);
@@ -252,6 +237,7 @@ public class RecordingManager {
 
     private void cleanupFailedStart() {
         recording.set(false);
+        paused.set(false);
         stopping.set(false);
         audioCaptureManager.stop();
         if (ffmpegEncoder != null) {
@@ -263,7 +249,6 @@ public class RecordingManager {
 
     public void shutdownSafely() {
         if (recording.get()) {
-            ScreenRecorderClient.LOGGER.info("Finalizing active recording before shutdown...");
             recording.set(false);
             performSafeStop();
         }
@@ -273,13 +258,18 @@ public class RecordingManager {
         return recording.get();
     }
 
+    public boolean isPaused() {
+        return paused.get();
+    }
+
     public boolean isStopping() {
         return stopping.get();
     }
 
     public String getFormattedDuration() {
         if (!recording.get()) return "00:00:00";
-        long elapsedSec = Math.max(0, (System.currentTimeMillis() - recordingStartTimeMs) / 1000L);
+        long now = paused.get() ? pauseStartMs : System.currentTimeMillis();
+        long elapsedSec = Math.max(0, (now - recordingStartTimeMs - pausedAccumulatedMs) / 1000L);
         return String.format("%02d:%02d:%02d", elapsedSec / 3600, (elapsedSec % 3600) / 60, elapsedSec % 60);
     }
 
