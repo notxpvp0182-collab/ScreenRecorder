@@ -167,9 +167,6 @@ public class RecordingsScreen extends Screen {
 
         // Window Titlebar
         context.fill(winX + 1, winY + 1, winX + winW - 1, winY + 15, 0xFF2B2E38);
-        context.fill(winX + 6, winY + 5, winX + 11, winY + 10, 0xFFFF5F56);
-        context.fill(winX + 14, winY + 5, winX + 19, winY + 10, 0xFFFFBD2E);
-        context.fill(winX + 22, winY + 5, winX + 27, winY + 10, 0xFF27C93F);
         context.drawCenteredTextWithShadow(this.textRenderer, "OBS Studio — Saved Recordings (" + recordings.size() + ")", winX + winW / 2, winY + 4, 0xFFDADCE0);
 
         int listX = winX + 10;

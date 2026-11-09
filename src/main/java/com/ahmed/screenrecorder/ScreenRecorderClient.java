@@ -22,6 +22,7 @@ public class ScreenRecorderClient implements ClientModInitializer {
         RecordingConfig.load();
         RecordingFileManager.initDirectory();
         KeybindManager.register();
+        com.ahmed.screenrecorder.audio.InGameSoundTracker.register();
 
         HudRenderCallback.EVENT.register((drawContext, renderTickCounter) -> {
             RecordingIndicator.render(drawContext);
