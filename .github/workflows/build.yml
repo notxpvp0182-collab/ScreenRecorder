@@ -5,6 +5,9 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,22 +22,10 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Download & Bundle Real Static FFmpeg Binaries (ARMv7 + ARM64) into Mod JAR
+      - name: Generate Official OBS Studio PNG Icon & Clean Resources
         run: |
+          rm -rf src/main/resources/assets/screen_recorder/lut
           mkdir -p src/main/resources/assets/screen_recorder/bin
-
-          echo "Downloading verified static FFmpeg for ARMv7 (32-bit Android/Linux)..."
-          curl -L --fail -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm \
-            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-arm" || \
-          curl -L --fail -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm \
-            "https://raw.githubusercontent.com/ebe123/ffmpeg-bin/master/ffmpeg-arm" || true
-
-          echo "Downloading verified static FFmpeg for ARM64 (64-bit Android/Linux)..."
-          curl -L --fail -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 \
-            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-arm64" || true
-
-          chmod +x src/main/resources/assets/screen_recorder/bin/* || true
-          ls -lh src/main/resources/assets/screen_recorder/bin/
 
           cat << 'JAVAEOF' > MakeAssets.java
           import java.awt.*;
@@ -76,10 +67,20 @@ jobs:
       - name: Build with Gradle
         run: gradle build --no-daemon
 
-      - name: Upload Built JAR
+      - name: Upload Uncompressed JAR Artifact
         uses: actions/upload-artifact@v4
         with:
           name: OBS-Mod-JAR
+          compression-level: 0
           path: |
-            build/libs/*.jar
-            !build/libs/*-sources.jar
+            build/libs/OBS-1.21.11.jar
+
+      - name: Publish Direct Downloadable OBS-1.21.11.jar to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "OBS Studio Mod 1.21.11 (Direct JAR Download)"
+          files: build/libs/OBS-1.21.11.jar
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
