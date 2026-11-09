@@ -2,6 +2,7 @@ package com.ahmed.screenrecorder.capture;
 
 import com.ahmed.screenrecorder.ScreenRecorderClient;
 import com.ahmed.screenrecorder.audio.AudioCaptureManager;
+import com.ahmed.screenrecorder.audio.WavAudioTrackRecorder;
 import com.ahmed.screenrecorder.config.RecordingConfig;
 import com.ahmed.screenrecorder.util.RecordingFileManager;
 import net.minecraft.client.MinecraftClient;
@@ -10,13 +11,13 @@ import net.minecraft.client.util.ScreenshotRecorder;
 import net.minecraft.text.Text;
 
 import java.io.File;
+import java.io.OutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Ultra-Smooth Zero-Lag Recording Manager:
- * 1. Performs ONE single-pass glReadPixels on the Render Thread only when the background encoder is idle.
- * 2. Converts RGBA -> RGB and encodes H.264 100% on the background thread (0% lag on gameplay!).
- * 3. Calibrates the MP4 header duration upon stop so 50s of recording is ALWAYS 50.00s in every player!
+ * Master OBS Studio Recording Coordinator:
+ * Uses AsyncPboFrameGrabber + ColorSpaceConverter + WavAudioTrackRecorder + VariableDurationMp4Patcher
+ * for 100% lag-free full-screen recording with in-game sounds, microphone voice, and exact 1x duration!
  */
 public class RecordingManager {
     private static final RecordingManager INSTANCE = new RecordingManager();
@@ -26,8 +27,9 @@ public class RecordingManager {
     private final AtomicBoolean stopping = new AtomicBoolean(false);
     private final AtomicBoolean rawFrameWaiting = new AtomicBoolean(false);
 
-    private final SinglePassFrameGrabber frameGrabber = new SinglePassFrameGrabber();
+    private final AsyncPboFrameGrabber pboGrabber = new AsyncPboFrameGrabber();
     private final AudioCaptureManager audioCaptureManager = new AudioCaptureManager();
+    private final WavAudioTrackRecorder wavRecorder = new WavAudioTrackRecorder();
     private final PerformanceManager performanceManager = new PerformanceManager();
     private FFmpegEncoder ffmpegEncoder;
 
@@ -41,7 +43,7 @@ public class RecordingManager {
     private long pauseStartMs = 0;
     private long lastGlGrabTimeMs = 0;
 
-    private String lastStatusMessage = "OBS Ready";
+    private String lastStatusMessage = "OBS Studio Ready — Zero-Lag Engine Active";
     private boolean lastStatusIsError = false;
 
     public static RecordingManager getInstance() {
@@ -69,12 +71,23 @@ public class RecordingManager {
             currentOutputFile = RecordingFileManager.createUniqueRecordingFile();
             ffmpegEncoder = new FFmpegEncoder();
             ffmpegEncoder.start(currentOutputFile, fb.textureWidth, fb.textureHeight);
+            wavRecorder.start(currentOutputFile);
 
             int rgbSize = ffmpegEncoder.getTargetW() * ffmpegEncoder.getTargetH() * 3;
             workerRgbBuffer = new byte[rgbSize];
             performanceManager.initializePool(1024, 2);
 
-            audioCaptureManager.start(ffmpegEncoder.getAudioOutputStream());
+            // Route mixed game audio + microphone audio into the companion WAV track
+            audioCaptureManager.start(new OutputStream() {
+                @Override
+                public void write(int b) {}
+                @Override
+                public void write(byte[] b, int off, int len) {
+                    if (recording.get() && !paused.get()) {
+                        wavRecorder.writePcmChunk(b, len);
+                    }
+                }
+            });
 
             recordingStartTimeMs = System.currentTimeMillis();
             pausedAccumulatedMs = 0;
@@ -84,7 +97,7 @@ public class RecordingManager {
             lastGlGrabTimeMs = 0L;
             recording.set(true);
 
-            videoEncoderThread = new Thread(this::runBackgroundEncodeWorker, "OBS-ZeroLagEncoder");
+            videoEncoderThread = new Thread(this::runBackgroundEncodeWorker, "OBS-ZeroLagWorker");
             videoEncoderThread.setDaemon(true);
             videoEncoderThread.setPriority(Thread.MIN_PRIORITY + 2);
             videoEncoderThread.start();
@@ -114,7 +127,7 @@ public class RecordingManager {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client != null && client.getFramebuffer() != null) {
             ScreenshotRecorder.saveScreenshot(client.runDirectory, client.getFramebuffer(), msg -> {
-                setStatus("Screenshot saved", false);
+                setStatus("Screenshot saved to screenshots/", false);
             });
         }
     }
@@ -129,7 +142,7 @@ public class RecordingManager {
         stopping.set(true);
         recording.set(false);
         paused.set(false);
-        setStatus("Finalizing MP4...", false);
+        setStatus("Finalizing HD MP4 & Audio...", false);
 
         Thread stopThread = new Thread(this::performSafeStop, "OBS-Finalizer");
         stopThread.setDaemon(false);
@@ -146,7 +159,7 @@ public class RecordingManager {
 
     public void onFrameRendered() {
         if (!recording.get() || paused.get() || stopping.get()) return;
-        if (rawFrameWaiting.get()) return; // Background thread is still encoding previous frame; do NOT stall game!
+        if (rawFrameWaiting.get()) return;
 
         int targetFps = Math.max(15, Math.min(60, RecordingConfig.get().getTargetFps()));
         long minIntervalMs = Math.max(16L, 1000L / targetFps);
@@ -157,7 +170,7 @@ public class RecordingManager {
         }
 
         lastGlGrabTimeMs = nowMs;
-        if (frameGrabber.grabFullFramebufferFast()) {
+        if (pboGrabber.captureFullScreenNonBlocking()) {
             rawFrameWaiting.set(true);
         }
     }
@@ -171,13 +184,20 @@ public class RecordingManager {
                 }
 
                 if (rawFrameWaiting.get()) {
-                    frameGrabber.convertOnBackgroundThread(workerRgbBuffer, ffmpegEncoder.getTargetW(), ffmpegEncoder.getTargetH());
+                    ColorSpaceConverter.convertRgbaToSharpRgb(
+                            pboGrabber.getDirectRgbaBuffer(),
+                            pboGrabber.getLastCapturedW(),
+                            pboGrabber.getLastCapturedH(),
+                            workerRgbBuffer,
+                            ffmpegEncoder.getTargetW(),
+                            ffmpegEncoder.getTargetH()
+                    );
                     rawFrameWaiting.set(false);
 
                     ffmpegEncoder.writeSinglePassFrame(workerRgbBuffer);
                     performanceManager.recordFrameEncoded();
                 } else {
-                    Thread.sleep(8);
+                    Thread.sleep(6);
                 }
             }
         } catch (Exception e) {
@@ -188,6 +208,7 @@ public class RecordingManager {
     private void performSafeStop() {
         try {
             audioCaptureManager.stop();
+            wavRecorder.finish();
 
             if (videoEncoderThread != null && Thread.currentThread() != videoEncoderThread) {
                 try {
@@ -222,6 +243,7 @@ public class RecordingManager {
         paused.set(false);
         stopping.set(false);
         audioCaptureManager.stop();
+        wavRecorder.finish();
         if (ffmpegEncoder != null) {
             ffmpegEncoder.stopAndFinalize(1000L);
             ffmpegEncoder = null;
@@ -258,6 +280,11 @@ public class RecordingManager {
 
     public String getLastStatusMessage() {
         return lastStatusMessage;
+    }
+
+    public void setCustomStatusMessage(String msg) {
+        this.lastStatusMessage = msg;
+        this.lastStatusIsError = false;
     }
 
     public boolean isLastStatusError() {

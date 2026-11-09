@@ -1,5 +1,6 @@
 package com.ahmed.screenrecorder.gui;
 
+import com.ahmed.screenrecorder.audio.WavAudioTrackRecorder;
 import com.ahmed.screenrecorder.capture.NativeMjpegMp4Muxer;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
@@ -14,11 +15,19 @@ import org.jcodec.common.model.Picture;
 import org.jcodec.scale.ColorUtil;
 import org.jcodec.scale.Transform;
 
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.Clip;
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Synchronized Audio + Video In-Game MP4 Player.
+ * Plays both the recorded video stream AND the companion WAV audio track (In-game sounds + Microphone voice)
+ * with zero lag!
+ */
 public class VideoPlayerScreen extends Screen {
     private final Screen parent;
     private final File videoFile;
@@ -33,6 +42,7 @@ public class VideoPlayerScreen extends Screen {
     private volatile boolean playing = true;
     private volatile int seekRequestFrame = -1;
 
+    private Clip audioClip;
     private final AtomicBoolean hasDecodedFrame = new AtomicBoolean(false);
     private final AtomicInteger loadProgressPct = new AtomicInteger(0);
     private final AtomicBoolean workerRunning = new AtomicBoolean(false);
@@ -44,7 +54,20 @@ public class VideoPlayerScreen extends Screen {
         super(Text.literal(videoFile.getName()));
         this.parent = parent;
         this.videoFile = videoFile;
+        initAudioPlayback();
         startNonBlockingDecoder();
+    }
+
+    private void initAudioPlayback() {
+        try {
+            File wavFile = WavAudioTrackRecorder.getCompanionWavFile(videoFile);
+            if (wavFile.exists() && wavFile.length() > 44) {
+                AudioInputStream ais = AudioSystem.getAudioInputStream(wavFile);
+                audioClip = AudioSystem.getClip();
+                audioClip.open(ais);
+                audioClip.start();
+            }
+        } catch (Exception ignored) {}
     }
 
     private void computeWindowBounds() {
@@ -88,6 +111,10 @@ public class VideoPlayerScreen extends Screen {
             while (workerRunning.get()) {
                 if (seekRequestFrame >= 0) {
                     currentFrameIdx = Math.min(totalFrames - 1, seekRequestFrame);
+                    if (audioClip != null) {
+                        long microPos = (long) ((currentFrameIdx / (double) totalFrames) * totalDurationMs * 1000L);
+                        audioClip.setMicrosecondPosition(Math.max(0L, microPos));
+                    }
                     seekRequestFrame = -1;
                 }
 
@@ -101,6 +128,7 @@ public class VideoPlayerScreen extends Screen {
                 if (offset + frameBytes > raf.length()) {
                     currentFrameIdx = 0;
                     playing = false;
+                    if (audioClip != null) audioClip.stop();
                     continue;
                 }
 
@@ -207,6 +235,10 @@ public class VideoPlayerScreen extends Screen {
                 Text.literal(playing ? "Pause" : "Play"),
                 () -> {
                     playing = !playing;
+                    if (audioClip != null) {
+                        if (playing) audioClip.start();
+                        else audioClip.stop();
+                    }
                     playPauseBtn.setIcon(playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY);
                     playPauseBtn.setMessage(Text.literal(playing ? "Pause" : "Play"));
                 },
@@ -219,6 +251,10 @@ public class VideoPlayerScreen extends Screen {
                 () -> {
                     seekRequestFrame = 0;
                     playing = true;
+                    if (audioClip != null) {
+                        audioClip.setMicrosecondPosition(0);
+                        audioClip.start();
+                    }
                 }
         ));
 
@@ -324,6 +360,12 @@ public class VideoPlayerScreen extends Screen {
     @Override
     public void close() {
         workerRunning.set(false);
+        if (audioClip != null) {
+            try {
+                audioClip.stop();
+                audioClip.close();
+            } catch (Exception ignored) {}
+        }
         this.client.setScreen(parent);
     }
 }

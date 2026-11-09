@@ -123,6 +123,7 @@ public class AudioCaptureManager {
             }
 
             // 3. Mix synchronized streams
+            InGameAudioTap.mixInGameSoundsIntoPcm(gameBuf, chunkSize, cfg.gameVolume);
             AudioProcessor.mixPcmStreams(gameBuf, micBuf, mixBuf, chunkSize);
 
             // 4. Write to FFmpeg audio pipe

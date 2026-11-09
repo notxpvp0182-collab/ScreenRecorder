@@ -1,5 +1,8 @@
 package com.ahmed.screenrecorder.gui;
 
+import com.ahmed.screenrecorder.audio.AudioFilterChain;
+import com.ahmed.screenrecorder.audio.MicrophoneManager;
+import com.ahmed.screenrecorder.capture.AutoConfigWizard;
 import com.ahmed.screenrecorder.capture.RecordingManager;
 import com.ahmed.screenrecorder.config.RecordingConfig;
 import com.ahmed.screenrecorder.util.RecordingFileManager;
@@ -9,23 +12,15 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
 
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
- * Zero-Lag 60 FPS OBS Studio 30 Floating Click-GUI:
- * Uses a direct crystal-clear hardware viewport cut-out for the 16:9 Live Preview Canvas
- * so opening OBS causes 0% FPS drop and shows the live game in 100% native HD sharpness!
+ * Pure Lag-Free OBS Studio 30 Control Center (No Live Preview Canvas -> 100% 60+ FPS!).
+ * Dedicates the entire floating Click-GUI window to spacious, well-aligned studio docks,
+ * interactive audio mixers, quick profile switchers, and right-click context menus.
  */
 public class RecorderScreen extends Screen {
     private final Screen parent;
-    private static final List<String> SCENES = new ArrayList<>(Arrays.asList("Main Scene", "Full Display", "Gameplay Scene"));
-    private static final List<String> SOURCES = new ArrayList<>(Arrays.asList("Display Capture", "Game Capture", "Desktop Audio", "Mic/Aux"));
-    private static int selectedScene = 0;
-    private static int selectedSource = 0;
-    private static boolean studioMode = false;
-    private static boolean showStatsWindow = false;
 
     private boolean contextMenuOpen = false;
     private int contextMenuX = 0;
@@ -33,10 +28,10 @@ public class RecorderScreen extends Screen {
     private final String[] contextMenuItems = {
             "Add Display Capture",
             "Add Game Capture",
-            "Source Properties...",
-            "Audio Filters...",
-            "Transform: Fit to Screen",
-            "Remove Selected"
+            "Add Audio Input (Mic)",
+            "Add Audio Output (Game)",
+            "Open Source Properties",
+            "Remove Selected Source"
     };
 
     private boolean draggingDesktopVol = false;
@@ -44,13 +39,13 @@ public class RecorderScreen extends Screen {
     private int winX, winY, winW, winH;
 
     public RecorderScreen(Screen parent) {
-        super(Text.literal("OBS"));
+        super(Text.literal("OBS Studio"));
         this.parent = parent;
     }
 
     private void computeFloatingWindowBounds() {
-        this.winW = Math.min(500, Math.max(320, (int) (this.width * 0.88f)));
-        this.winH = Math.min(285, Math.max(195, (int) (this.height * 0.86f)));
+        this.winW = Math.min(500, Math.max(330, (int) (this.width * 0.90f)));
+        this.winH = Math.min(280, Math.max(200, (int) (this.height * 0.86f)));
         this.winX = (this.width - this.winW) / 2;
         this.winY = (this.height - this.winH) / 2;
     }
@@ -58,63 +53,83 @@ public class RecorderScreen extends Screen {
     @Override
     protected void init() {
         computeFloatingWindowBounds();
-        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
         RecordingManager mgr = RecordingManager.getInstance();
         RecordingConfig cfg = RecordingConfig.get();
 
         int pad = 6;
-        int bottomBarH = 13;
-        int dockAreaH = Math.max(78, Math.min(108, (int) (this.winH * 0.38f)));
-        int dockY = this.winY + this.winH - bottomBarH - dockAreaH - 2;
-        int toolbarY = dockY - 17;
+        int ribbonY = winY + 18;
+        int ribbonBtnW = (winW - pad * 2 - 15) / 6;
 
-        String currentSrc = SOURCES.isEmpty() ? "Display Capture" : SOURCES.get(Math.min(selectedSource, SOURCES.size() - 1));
-        int labelEnd = this.winX + pad + 20 + this.textRenderer.getWidth(currentSrc) + 8;
-        int tbX = Math.max(this.winX + 115, labelEnd);
-        int availTbW = (this.winX + this.winW - pad) - tbX;
-        int tbBtnW = Math.min(64, Math.max(42, (availTbW - 12) / 4));
+        // 1. Top Studio Action Ribbon (6 Well-Spaced Quick Tools)
+        this.addDrawableChild(new ThemeButton(winX + pad, ribbonY, ribbonBtnW, 16,
+                UIHelper.Icon.PERFORMANCE, Text.literal("Auto-Config"),
+                () -> {
+                    String res = AutoConfigWizard.runOptimalBenchmark();
+                    mgr.setCustomStatusMessage(res);
+                    this.clearAndInit();
+                }, true));
 
-        this.addDrawableChild(new ThemeButton(tbX, toolbarY + 2, tbBtnW, 12,
-                UIHelper.Icon.SETTINGS, Text.literal("Properties"),
-                () -> this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.VIDEO))));
+        this.addDrawableChild(new ThemeButton(winX + pad + (ribbonBtnW + 3), ribbonY, ribbonBtnW, 16,
+                UIHelper.Icon.VIDEO, Text.literal("Res: " + cfg.resolutionPreset.label),
+                () -> {
+                    RecordingConfig.ResolutionPreset[] vals = RecordingConfig.ResolutionPreset.values();
+                    cfg.resolutionPreset = vals[(cfg.resolutionPreset.ordinal() + 1) % vals.length];
+                    RecordingConfig.save();
+                    this.clearAndInit();
+                }));
 
-        this.addDrawableChild(new ThemeButton(tbX + tbBtnW + 3, toolbarY + 2, tbBtnW, 12,
-                UIHelper.Icon.FILTERS, Text.literal("Filters"),
-                () -> this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.AUDIO))));
+        this.addDrawableChild(new ThemeButton(winX + pad + (ribbonBtnW + 3) * 2, ribbonY, ribbonBtnW, 16,
+                UIHelper.Icon.PERFORMANCE, Text.literal("FPS: " + cfg.getTargetFps()),
+                () -> {
+                    RecordingConfig.FpsPreset[] vals = RecordingConfig.FpsPreset.values();
+                    cfg.fpsPreset = vals[(cfg.fpsPreset.ordinal() + 1) % vals.length];
+                    RecordingConfig.save();
+                    this.clearAndInit();
+                }));
 
-        this.addDrawableChild(new ThemeButton(tbX + (tbBtnW + 3) * 2, toolbarY + 2, tbBtnW, 12,
-                UIHelper.Icon.VIDEO, Text.literal("Shot"),
+        this.addDrawableChild(new ThemeButton(winX + pad + (ribbonBtnW + 3) * 3, ribbonY, ribbonBtnW, 16,
+                UIHelper.Icon.FILTERS, Text.literal("Compressor"),
+                () -> {
+                    AudioFilterChain.toggleCompressor();
+                    mgr.setCustomStatusMessage(AudioFilterChain.getActiveChainSummary());
+                    this.clearAndInit();
+                }, AudioFilterChain.isCompressorEnabled()));
+
+        this.addDrawableChild(new ThemeButton(winX + pad + (ribbonBtnW + 3) * 4, ribbonY, ribbonBtnW, 16,
+                UIHelper.Icon.VIDEO, Text.literal("Screenshot"),
                 mgr::takeScreenshot));
 
-        this.addDrawableChild(new ThemeButton(tbX + (tbBtnW + 3) * 3, toolbarY + 2, tbBtnW, 12,
-                UIHelper.Icon.PERFORMANCE, Text.literal("Stats"),
-                () -> {
-                    showStatsWindow = !showStatsWindow;
-                    this.clearAndInit();
-                }, showStatsWindow));
+        this.addDrawableChild(new ThemeButton(winX + pad + (ribbonBtnW + 3) * 5, ribbonY, ribbonBtnW, 16,
+                UIHelper.Icon.FOLDER, Text.literal("Recordings"),
+                () -> this.client.setScreen(new RecordingsScreen(this))));
 
-        int totalDockW = this.winW - pad * 2;
-        int gap = 3;
-        int colW = (totalDockW - gap * 4) / 5;
-        int controlsX = this.winX + pad + (colW + gap) * 4;
-        int controlsW = totalDockW - (colW + gap) * 4;
+        // 2. Main 4-Column Full-Height OBS Studio Docks (Spacious & Zero Overlap!)
+        int dockY = winY + 78;
+        int bottomBarH = 15;
+        int dockAreaH = (winY + winH - bottomBarH - 3) - dockY;
+        int totalDockW = winW - pad * 2;
+        int gap = 4;
+        int colW = (totalDockW - gap * 3) / 4;
 
-        int btnX = controlsX + 3;
-        int btnW = controlsW - 6;
-        int availBtnH = dockAreaH - 16;
-        int btnH = Math.max(10, (availBtnH - 10) / 6);
+        // Column 4: Controls Dock (Rightmost Column - Big, Clear Studio Buttons)
+        int controlsX = winX + pad + (colW + gap) * 3;
+        int controlsW = totalDockW - (colW + gap) * 3;
+        int btnX = controlsX + 4;
+        int btnW = controlsW - 8;
+        int availBtnH = dockAreaH - 18;
+        int btnH = Math.max(14, (availBtnH - 12) / 6);
         int stepY = btnH + 2;
-        int curY = dockY + 14;
+        int curY = dockY + 16;
 
         if (mgr.isRecording()) {
-            int stopW = btnW - 18;
+            int stopW = btnW - 22;
             this.addDrawableChild(new ThemeButton(btnX, curY, stopW, btnH,
-                    UIHelper.Icon.STOP, Text.literal("Stop"),
+                    UIHelper.Icon.STOP, Text.literal("Stop Rec"),
                     () -> {
                         mgr.stopRecording();
                         this.clearAndInit();
                     }, true));
-            this.addDrawableChild(new ThemeButton(btnX + stopW + 2, curY, 16, btnH,
+            this.addDrawableChild(new ThemeButton(btnX + stopW + 2, curY, 20, btnH,
                     mgr.isPaused() ? UIHelper.Icon.PLAY : UIHelper.Icon.PAUSE, Text.empty(),
                     () -> {
                         mgr.togglePause();
@@ -122,15 +137,15 @@ public class RecorderScreen extends Screen {
                     }, mgr.isPaused()));
         } else {
             this.addDrawableChild(new ThemeButton(btnX, curY, btnW, btnH,
-                    UIHelper.Icon.RECORD, Text.literal("Start Rec"),
+                    UIHelper.Icon.RECORD, Text.literal("Start Recording"),
                     () -> {
                         mgr.startRecording();
                         this.clearAndInit();
-                    }, false));
+                    }, true));
         }
 
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY, btnW, btnH,
-                UIHelper.Icon.FOLDER, Text.literal("Recordings"),
+                UIHelper.Icon.PLAY, Text.literal("Play Recordings"),
                 () -> this.client.setScreen(new RecordingsScreen(this))));
 
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 2, btnW, btnH,
@@ -142,170 +157,150 @@ public class RecorderScreen extends Screen {
                 }, cfg.microphoneEnabled));
 
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 3, btnW, btnH,
-                UIHelper.Icon.VIDEO, Text.literal("Studio"),
+                UIHelper.Icon.AUDIO, Text.literal("Game Audio: " + (cfg.gameAudioEnabled ? "ON" : "OFF")),
                 () -> {
-                    studioMode = !studioMode;
+                    cfg.gameAudioEnabled = !cfg.gameAudioEnabled;
+                    RecordingConfig.save();
                     this.clearAndInit();
-                }, studioMode));
+                }, cfg.gameAudioEnabled));
 
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 4, btnW, btnH,
-                UIHelper.Icon.SETTINGS, Text.literal("Settings"),
+                UIHelper.Icon.SETTINGS, Text.literal("OBS Settings"),
                 () -> this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.GENERAL))));
 
         this.addDrawableChild(new ThemeButton(btnX, curY + stepY * 5, btnW, btnH,
-                UIHelper.Icon.CLOSE, Text.literal("Exit"),
+                UIHelper.Icon.CLOSE, Text.literal("Exit OBS"),
                 this::close));
     }
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         computeFloatingWindowBounds();
-        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
         RecordingManager mgr = RecordingManager.getInstance();
         RecordingConfig cfg = RecordingConfig.get();
 
-        int pad = 6;
-        int bottomBarH = 13;
-        int dockAreaH = Math.max(78, Math.min(108, (int) (this.winH * 0.38f)));
-        int dockY = this.winY + this.winH - bottomBarH - dockAreaH - 2;
-        int toolbarY = dockY - 17;
-        int previewAreaY = winY + 15;
-        int previewAreaH = Math.max(36, toolbarY - previewAreaY - 2);
+        // Subtle background dim
+        context.fill(0, 0, this.width, this.height, 0x66000000);
 
-        int availW = winW - pad * 4;
-        int availH = previewAreaH - 6;
-        int canvasH = availH;
-        int canvasW = (canvasH * 16) / 9;
-        if (canvasW > availW) {
-            canvasW = availW;
-            canvasH = (canvasW * 9) / 16;
-        }
-        int canvasX = winX + (winW - canvasW) / 2;
-        int canvasY = previewAreaY + (previewAreaH - canvasH) / 2;
-
-        // Draw Floating OBS Window Frame AROUND the crystal-clear 60 FPS Live Preview Viewport!
+        // Main Floating OBS Studio Window
+        context.fill(winX - 2, winY - 2, winX + winW + 2, winY + winH + 2, 0x99000000);
         context.fill(winX, winY, winX + winW, winY + winH, 0xFF1D1F26);
-        ZeroCopyGlPreviewHandler.drawPreviewCanvas(context, canvasX, canvasY, canvasW, canvasH); // Above preview
-        context.fill(winX, canvasY + canvasH, winX + winW, winY + winH, 0xFF1D1F26); // Below preview
-        context.fill(winX, canvasY, canvasX, canvasY + canvasH, 0xFF1D1F26); // Left of preview
-        context.fill(canvasX + canvasW, canvasY, winX + winW, canvasY + canvasH, 0xFF1D1F26); // Right of preview
-
-        // Outer Window Border & Titlebar
         UIHelper.drawBorder(context, winX, winY, winW, winH, 0xFF3F4454);
-        context.fill(winX + 1, winY + 1, winX + winW - 1, winY + 14, 0xFF2B2E38);
+
+        // Window Titlebar
+        context.fill(winX + 1, winY + 1, winX + winW - 1, winY + 15, 0xFF2B2E38);
         context.fill(winX + 6, winY + 5, winX + 11, winY + 10, 0xFFFF5F56);
         context.fill(winX + 14, winY + 5, winX + 19, winY + 10, 0xFFFFBD2E);
         context.fill(winX + 22, winY + 5, winX + 27, winY + 10, 0xFF27C93F);
-        String topTitle = "OBS 30.1.2 - Profile: " + cfg.getTargetWidth() + "x" + cfg.getTargetHeight() + " - Scene: " + SCENES.get(Math.min(selectedScene, SCENES.size() - 1));
+        List<String> scenes = SceneCollectionManager.getScenes();
+        String curScene = scenes.get(Math.min(SceneCollectionManager.getSelectedSceneIdx(), scenes.size() - 1));
+        String topTitle = "OBS Studio 30.1.2 — Profile: " + cfg.getTargetWidth() + "x" + cfg.getTargetHeight() + " — Scene: " + curScene;
         context.drawCenteredTextWithShadow(this.textRenderer, topTitle, winX + winW / 2, winY + 3, 0xFFDADCE0);
 
-        // Red OBS Transform Bounding Box & Handles around the 60 FPS Live Preview
-        int boundColor = mgr.isRecording() ? (mgr.isPaused() ? 0xFFF1C40F : 0xFFFF3B30) : 0xFFE53935;
-        UIHelper.drawBorder(context, canvasX, canvasY, canvasW, canvasH, boundColor);
-        drawObsTransformHandles(context, canvasX, canvasY, canvasW, canvasH, boundColor);
+        int pad = 6;
 
-        // Subtle HUD crosshair & resolution badge inside Live Preview
-        String liveBadge = (mgr.isRecording() ? "LIVE REC " : "PREVIEW ") + cfg.getTargetWidth() + "x" + cfg.getTargetHeight();
-        context.fill(canvasX + 4, canvasY + 4, canvasX + 10 + this.textRenderer.getWidth(liveBadge), canvasY + 15, 0xAA121318);
-        context.drawTextWithShadow(this.textRenderer, liveBadge, canvasX + 7, canvasY + 6, mgr.isRecording() ? 0xFFFF5252 : 0xFF60A5FA);
+        // Telemetry & Live Status Dashboard Banner (Replaces heavy live preview with zero-lag pro telemetry!)
+        int dashY = winY + 37;
+        int dashH = 37;
+        context.fill(winX + pad, dashY, winX + winW - pad, dashY + dashH, 0xFF14161C);
+        UIHelper.drawBorder(context, winX + pad, dashY, winW - pad * 2, dashH, mgr.isRecording() ? 0xFFE53935 : 0xFF323644);
 
-        if (studioMode) {
-            int midX = canvasX + canvasW / 2;
-            context.fill(midX, canvasY, midX + 1, canvasY + canvasH, 0xFFE53935);
-            context.drawTextWithShadow(this.textRenderer, "Program", midX + 5, canvasY + 6, 0xFFFF5252);
-        }
+        // Left side of Banner: Recording State & Timer
+        int stateCol = mgr.isRecording() ? (mgr.isPaused() ? 0xFFF1C40F : 0xFFFF5252) : 0xFF60A5FA;
+        String stateLabel = mgr.isRecording() ? (mgr.isPaused() ? "RECORDING PAUSED" : "RECORDING LIVE (FULL SCREEN)") : "STANDBY — READY TO RECORD";
+        UIHelper.drawIcon(context, mgr.isRecording() ? UIHelper.Icon.RECORD : UIHelper.Icon.VIDEO, winX + pad + 6, dashY + 6, stateCol);
+        context.drawTextWithShadow(this.textRenderer, stateLabel, winX + pad + 18, dashY + 6, stateCol);
 
-        if (showStatsWindow) {
-            renderObsStatsPanel(context, canvasX + 4, canvasY + 18, mgr, cfg);
-        }
+        String timerStr = "Duration: " + mgr.getFormattedDuration() + "  |  Encoded: " + mgr.getPerformanceManager().getEncodedFrames() + " frames";
+        context.drawTextWithShadow(this.textRenderer, timerStr, winX + pad + 18, dashY + 20, 0xFFE8EAED);
 
-        // Middle Context Toolbar
-        context.fill(winX + pad, toolbarY, winX + winW - pad, toolbarY + 16, 0xFF262932);
-        UIHelper.drawBorder(context, winX + pad, toolbarY, winW - pad * 2, 16, 0xFF353844);
-        UIHelper.drawIcon(context, UIHelper.Icon.VIDEO, winX + pad + 4, toolbarY + 4, 0xFFE53935);
-        String srcLabel = SOURCES.isEmpty() ? "Display Capture" : SOURCES.get(Math.min(selectedSource, SOURCES.size() - 1));
-        context.drawTextWithShadow(this.textRenderer, srcLabel, winX + pad + 15, toolbarY + 4, 0xFFDADCE0);
+        // Right side of Banner: System Telemetry (FPS, RAM, Disk, Quality)
+        Runtime rt = Runtime.getRuntime();
+        long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+        long freeGb = RecordingFileManager.getRecordingsDir().getUsableSpace() / (1024L * 1024L * 1024L);
+        int gameFps = MinecraftClient.getInstance().getCurrentFps();
+        String sysLine1 = String.format("Game FPS: %d FPS  |  Quality: %s (%d kbps)", gameFps, cfg.videoQuality.name(), cfg.getTargetBitrateKbps());
+        String sysLine2 = String.format("RAM: %d MB  |  Disk Free: %d GB  |  Audio: In-Game + Mic", usedMb, freeGb);
+        int sw1 = this.textRenderer.getWidth(sysLine1);
+        int sw2 = this.textRenderer.getWidth(sysLine2);
+        context.drawTextWithShadow(this.textRenderer, sysLine1, winX + winW - pad - sw1 - 8, dashY + 6, 0xFF2ECC71);
+        context.drawTextWithShadow(this.textRenderer, sysLine2, winX + winW - pad - sw2 - 8, dashY + 20, 0xFFBDC1C6);
 
-        // 5 Bottom Docks
+        // 4 Full-Height OBS Studio Docks (Scenes | Sources | Audio Mixer | Controls)
+        int dockY = winY + 78;
+        int bottomBarH = 15;
+        int dockAreaH = (winY + winH - bottomBarH - 3) - dockY;
         int totalDockW = winW - pad * 2;
-        int gap = 3;
-        int colW = (totalDockW - gap * 4) / 5;
-        String[] dockTitles = {"Scenes", "Sources", "Audio Mixer", "Transitions", "Controls"};
+        int gap = 4;
+        int colW = (totalDockW - gap * 3) / 4;
+        String[] dockTitles = {"Scenes", "Sources (Right-Click)", "Audio Mixer & Filters", "Controls"};
 
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 4; i++) {
             int dx = winX + pad + i * (colW + gap);
-            int dw = (i == 4) ? (totalDockW - (colW + gap) * 4) : colW;
+            int dw = (i == 3) ? (totalDockW - (colW + gap) * 3) : colW;
 
             context.fill(dx, dockY, dx + dw, dockY + dockAreaH, 0xFF23262E);
-            context.fill(dx, dockY, dx + dw, dockY + 12, 0xFF2D303B);
+            context.fill(dx, dockY, dx + dw, dockY + 13, 0xFF2D303B);
             UIHelper.drawBorder(context, dx, dockY, dw, dockAreaH, 0xFF383C4A);
-            context.drawTextWithShadow(this.textRenderer, dockTitles[i], dx + 4, dockY + 2, 0xFFE8EAED);
+            context.drawTextWithShadow(this.textRenderer, dockTitles[i], dx + 5, dockY + 3, 0xFFE8EAED);
 
             if (i == 0) {
-                for (int s = 0; s < SCENES.size() && s < 4; s++) {
-                    int sy = dockY + 14 + s * 12;
-                    if (s == selectedScene) {
-                        context.fill(dx + 2, sy, dx + dw - 2, sy + 11, 0xFF2865C7);
+                // SCENES DOCK
+                for (int s = 0; s < scenes.size() && s < 7; s++) {
+                    int sy = dockY + 16 + s * 15;
+                    if (s == SceneCollectionManager.getSelectedSceneIdx()) {
+                        context.fill(dx + 2, sy, dx + dw - 2, sy + 13, 0xFF2865C7);
                     }
-                    context.drawTextWithShadow(this.textRenderer, truncate(SCENES.get(s), 13), dx + 4, sy + 2, 0xFFFFFFFF);
+                    context.drawTextWithShadow(this.textRenderer, truncate(scenes.get(s), 18), dx + 6, sy + 3, 0xFFFFFFFF);
                 }
-                drawDockMiniToolbar(context, dx + 2, dockY + dockAreaH - 12, dw - 4);
+                drawDockMiniToolbar(context, dx + 2, dockY + dockAreaH - 13, dw - 4);
             } else if (i == 1) {
-                for (int s = 0; s < SOURCES.size() && s < 4; s++) {
-                    int sy = dockY + 14 + s * 12;
-                    if (s == selectedSource) {
-                        context.fill(dx + 2, sy, dx + dw - 2, sy + 11, 0xFF2865C7);
+                // SOURCES DOCK
+                List<SceneCollectionManager.SourceItem> sources = SceneCollectionManager.getSources();
+                for (int s = 0; s < sources.size() && s < 7; s++) {
+                    int sy = dockY + 16 + s * 15;
+                    SceneCollectionManager.SourceItem item = sources.get(s);
+                    if (s == SceneCollectionManager.getSelectedSourceIdx()) {
+                        context.fill(dx + 2, sy, dx + dw - 2, sy + 13, 0xFF2865C7);
                     }
-                    String sName = SOURCES.get(s);
-                    boolean enabled = true;
-                    UIHelper.Icon ic = UIHelper.Icon.VIDEO;
-                    if (sName.contains("Desktop")) { enabled = cfg.gameAudioEnabled; ic = UIHelper.Icon.AUDIO; }
-                    else if (sName.contains("Mic")) { enabled = cfg.microphoneEnabled; ic = UIHelper.Icon.MICROPHONE; }
-                    int col = enabled ? 0xFFFFFFFF : 0xFF6C707E;
-                    UIHelper.drawIcon(context, ic, dx + 4, sy + 2, col);
-                    context.drawTextWithShadow(this.textRenderer, truncate(sName, 9), dx + 14, sy + 2, col);
-                    UIHelper.drawIcon(context, UIHelper.Icon.EYE, dx + dw - 19, sy + 2, col);
-                    UIHelper.drawIcon(context, UIHelper.Icon.LOCK, dx + dw - 10, sy + 2, 0xFF9AA0A6);
+                    int col = item.visible ? 0xFFFFFFFF : 0xFF6C707E;
+                    UIHelper.drawIcon(context, item.icon, dx + 4, sy + 3, col);
+                    context.drawTextWithShadow(this.textRenderer, truncate(item.name, 13), dx + 14, sy + 3, col);
+                    UIHelper.drawIcon(context, UIHelper.Icon.EYE, dx + dw - 21, sy + 3, item.visible ? 0xFF60A5FA : 0xFF555555);
+                    UIHelper.drawIcon(context, UIHelper.Icon.LOCK, dx + dw - 10, sy + 3, item.locked ? 0xFFE53935 : 0xFF777777);
                 }
-                drawDockMiniToolbar(context, dx + 2, dockY + dockAreaH - 12, dw - 4);
+                drawDockMiniToolbar(context, dx + 2, dockY + dockAreaH - 13, dw - 4);
             } else if (i == 2) {
-                renderInteractiveAudioMixer(context, dx + 4, dockY + 15, dw - 8, cfg, mgr.isRecording() && !mgr.isPaused());
-            } else if (i == 3) {
-                context.fill(dx + 4, dockY + 16, dx + dw - 4, dockY + 27, 0xFF323642);
-                UIHelper.drawBorder(context, dx + 4, dockY + 16, dw - 8, 11, 0xFF454A59);
-                context.drawTextWithShadow(this.textRenderer, "Cut / Fade", dx + 6, dockY + 18, 0xFFFFFFFF);
-
-                context.drawTextWithShadow(this.textRenderer, "Duration", dx + 4, dockY + 31, 0xFFBDC1C6);
-                context.fill(dx + 4, dockY + 41, dx + dw - 4, dockY + 52, 0xFF191B21);
-                context.drawTextWithShadow(this.textRenderer, "300 ms", dx + 6, dockY + 43, 0xFFFFFFFF);
+                // AUDIO MIXER & MIC SELECTOR DOCK
+                renderSpaciousAudioMixer(context, dx + 5, dockY + 18, dw - 10, cfg, mgr.isRecording() && !mgr.isPaused());
             }
         }
 
-        // Bottom Telemetry Status Bar
+        // Bottom OBS Status Bar
         int sbY = winY + winH - bottomBarH;
         context.fill(winX + 1, sbY, winX + winW - 1, winY + winH - 1, 0xFF282B34);
         context.drawTextWithShadow(this.textRenderer, mgr.getLastStatusMessage(), winX + 6, sbY + 3, mgr.isLastStatusError() ? 0xFFFF5252 : 0xFFBDC1C6);
 
-        int currentFps = MinecraftClient.getInstance().getCurrentFps();
-        String statsRight = String.format("REC: %s | %d FPS", mgr.getFormattedDuration(), currentFps);
+        String statsRight = String.format("REC: %s | %d FPS", mgr.getFormattedDuration(), gameFps);
         int rw = this.textRenderer.getWidth(statsRight);
         context.drawTextWithShadow(this.textRenderer, statsRight, winX + winW - rw - 6, sbY + 3, 0xFFE8EAED);
 
         super.render(context, mouseX, mouseY, delta);
 
+        // Render Right-Click Popup Menu
         if (contextMenuOpen) {
-            int cmW = 128;
-            int cmH = contextMenuItems.length * 14 + 4;
+            int cmW = 142;
+            int cmH = contextMenuItems.length * 15 + 4;
             int cx = Math.min(contextMenuX, this.width - cmW - 4);
             int cy = Math.min(contextMenuY, this.height - cmH - 4);
             context.fill(cx, cy, cx + cmW, cy + cmH, 0xFF282C37);
             UIHelper.drawBorder(context, cx, cy, cmW, cmH, 0xFF60A5FA);
 
             for (int i = 0; i < contextMenuItems.length; i++) {
-                int iy = cy + 2 + i * 14;
-                boolean hover = mouseX >= cx && mouseX <= cx + cmW && mouseY >= iy && mouseY < iy + 14;
+                int iy = cy + 2 + i * 15;
+                boolean hover = mouseX >= cx && mouseX <= cx + cmW && mouseY >= iy && mouseY < iy + 15;
                 if (hover) {
-                    context.fill(cx + 2, iy, cx + cmW - 2, iy + 13, 0xFF2865C7);
+                    context.fill(cx + 2, iy, cx + cmW - 2, iy + 14, 0xFF2865C7);
                 }
                 context.drawTextWithShadow(this.textRenderer, contextMenuItems[i], cx + 6, iy + 3, 0xFFFFFFFF);
             }
@@ -314,74 +309,62 @@ public class RecorderScreen extends Screen {
         RecordingIndicator.renderCleanOverlay(context);
     }
 
-    private String truncate(String s, int len) {
-        if (s == null) return "";
-        return s.length() <= len ? s : s.substring(0, len);
-    }
+    private void renderSpaciousAudioMixer(DrawContext context, int x, int y, int w, RecordingConfig cfg, boolean live) {
+        float jitter = live ? (float) (Math.sin(System.currentTimeMillis() * 0.025) * 0.07) : 0.0f;
 
-    private void renderObsStatsPanel(DrawContext ctx, int x, int y, RecordingManager mgr, RecordingConfig cfg) {
-        int w = 158;
-        int h = 44;
-        ctx.fill(x, y, x + w, y + h, 0xE6191B22);
-        UIHelper.drawBorder(ctx, x, y, w, h, 0xFF3B82F6);
+        // 1. In-Game Desktop Audio (Block Place, Footsteps, Combat, UI)
+        context.drawTextWithShadow(this.textRenderer, "In-Game Audio: " + cfg.gameVolume + "%", x, y, 0xFFE8EAED);
+        drawDbMeterBar(context, x, y + 11, w, cfg.gameAudioEnabled ? Math.max(0.05f, (cfg.gameVolume / 100.0f) + jitter) : 0.0f);
+        drawBlueVolumeSlider(context, x, y + 19, w, cfg.gameVolume / 100.0f);
 
-        Runtime rt = Runtime.getRuntime();
-        long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
-        long freeDiskGb = RecordingFileManager.getRecordingsDir().getUsableSpace() / (1024L * 1024L * 1024L);
-        int encoded = mgr.getPerformanceManager().getEncodedFrames();
+        // 2. Microphone / Aux Input
+        int micY = y + 34;
+        context.drawTextWithShadow(this.textRenderer, "Mic/Aux: " + cfg.microphoneVolume + "%", x, micY, 0xFFE8EAED);
+        drawDbMeterBar(context, x, micY + 11, w, cfg.microphoneEnabled ? Math.max(0.05f, (cfg.microphoneVolume / 100.0f) + jitter) : 0.0f);
+        drawBlueVolumeSlider(context, x, micY + 19, w, cfg.microphoneVolume / 100.0f);
 
-        ctx.drawTextWithShadow(this.textRenderer, "RAM: " + usedMb + "MB | Disk: " + freeDiskGb + "GB", x + 4, y + 4, 0xFFE8EAED);
-        ctx.drawTextWithShadow(this.textRenderer, "Encoded Frames: " + encoded, x + 4, y + 17, 0xFF60A5FA);
-        ctx.drawTextWithShadow(this.textRenderer, "H.264 Stream Ready", x + 4, y + 30, 0xFF2ECC71);
-    }
+        // 3. Connected Mic Device & DSP Info Box (Click to cycle mic device!)
+        int devY = y + 68;
+        context.fill(x, devY, x + w, devY + 16, 0xFF181A20);
+        UIHelper.drawBorder(context, x, devY, w, 16, 0xFF3A3F4D);
+        context.drawTextWithShadow(this.textRenderer, "Mic: " + truncate(cfg.microphoneDevice, 14), x + 4, devY + 4, 0xFF60A5FA);
 
-    private void drawObsTransformHandles(DrawContext ctx, int x, int y, int w, int h, int color) {
-        int s = 3;
-        ctx.fill(x - 1, y - 1, x + s, y + s, color);
-        ctx.fill(x + w - s, y - 1, x + w + 1, y + s, color);
-        ctx.fill(x - 1, y + h - s, x + s, y + h + 1, color);
-        ctx.fill(x + w - s, y + h - s, x + w + 1, y + h + 1, color);
+        int filterY = devY + 21;
+        String dspStr = "NoiseGate: " + (cfg.noiseGate ? "ON" : "OFF") + " | Gain: +" + Math.round(cfg.microphoneGainDb) + "dB";
+        context.drawTextWithShadow(this.textRenderer, truncate(dspStr, 22), x, filterY, 0xFF9AA0A6);
     }
 
     private void drawDockMiniToolbar(DrawContext context, int x, int y, int w) {
         context.fill(x, y, x + w, y + 11, 0xFF292C36);
-        int step = Math.max(10, Math.min(15, w / 5));
-        UIHelper.drawIcon(context, UIHelper.Icon.PLUS, x + 3, y + 2, 0xFFBDC1C6);
-        UIHelper.drawIcon(context, UIHelper.Icon.MINUS, x + 3 + step, y + 2, 0xFFBDC1C6);
-        UIHelper.drawIcon(context, UIHelper.Icon.SETTINGS, x + 3 + step * 2, y + 2, 0xFFBDC1C6);
-        UIHelper.drawIcon(context, UIHelper.Icon.UP, x + 3 + step * 3, y + 2, 0xFFBDC1C6);
-        UIHelper.drawIcon(context, UIHelper.Icon.DOWN, x + 3 + step * 4, y + 2, 0xFFBDC1C6);
-    }
-
-    private void renderInteractiveAudioMixer(DrawContext context, int x, int y, int w, RecordingConfig cfg, boolean live) {
-        float jitter = live ? (float) (Math.sin(System.currentTimeMillis() * 0.025) * 0.06) : 0.0f;
-
-        context.drawTextWithShadow(this.textRenderer, "Desktop (" + cfg.gameVolume + "%)", x, y, 0xFFE8EAED);
-        drawDbMeterBar(context, x, y + 10, w, cfg.gameAudioEnabled ? Math.max(0f, (cfg.gameVolume / 100.0f) + jitter) : 0.0f);
-        drawBlueVolumeSlider(context, x, y + 16, w, cfg.gameVolume / 100.0f);
-
-        int micY = y + 26;
-        context.drawTextWithShadow(this.textRenderer, "Mic/Aux (" + cfg.microphoneVolume + "%)", x, micY, 0xFFE8EAED);
-        drawDbMeterBar(context, x, micY + 10, w, cfg.microphoneEnabled ? Math.max(0f, (cfg.microphoneVolume / 100.0f) + jitter) : 0.0f);
-        drawBlueVolumeSlider(context, x, micY + 16, w, cfg.microphoneVolume / 100.0f);
+        int step = Math.max(12, Math.min(20, w / 5));
+        UIHelper.drawIcon(context, UIHelper.Icon.PLUS, x + 4, y + 2, 0xFFBDC1C6);
+        UIHelper.drawIcon(context, UIHelper.Icon.MINUS, x + 4 + step, y + 2, 0xFFBDC1C6);
+        UIHelper.drawIcon(context, UIHelper.Icon.SETTINGS, x + 4 + step * 2, y + 2, 0xFFBDC1C6);
+        UIHelper.drawIcon(context, UIHelper.Icon.UP, x + 4 + step * 3, y + 2, 0xFFBDC1C6);
+        UIHelper.drawIcon(context, UIHelper.Icon.DOWN, x + 4 + step * 4, y + 2, 0xFFBDC1C6);
     }
 
     private void drawDbMeterBar(DrawContext context, int x, int y, int w, float activeRatio) {
-        context.fill(x, y, x + w, y + 4, 0xFF14161B);
+        context.fill(x, y, x + w, y + 5, 0xFF14161B);
         int activeW = (int) (w * Math.min(1.0f, activeRatio));
         int greenEnd = (int) (w * 0.70f);
         int yellowEnd = (int) (w * 0.88f);
 
-        if (activeW > 0) context.fill(x, y, x + Math.min(activeW, greenEnd), y + 4, 0xFF2ECC71);
-        if (activeW > greenEnd) context.fill(x + greenEnd, y, x + Math.min(activeW, yellowEnd), y + 4, 0xFFF1C40F);
-        if (activeW > yellowEnd) context.fill(x + yellowEnd, y, x + activeW, y + 4, 0xFFE74C3C);
+        if (activeW > 0) context.fill(x, y, x + Math.min(activeW, greenEnd), y + 5, 0xFF2ECC71);
+        if (activeW > greenEnd) context.fill(x + greenEnd, y, x + Math.min(activeW, yellowEnd), y + 5, 0xFFF1C40F);
+        if (activeW > yellowEnd) context.fill(x + yellowEnd, y, x + activeW, y + 5, 0xFFE74C3C);
     }
 
     private void drawBlueVolumeSlider(DrawContext context, int x, int y, int w, float percent) {
-        context.fill(x, y + 1, x + w, y + 3, 0xFF3A3F4D);
+        context.fill(x, y + 1, x + w, y + 4, 0xFF3A3F4D);
         int fillW = (int) (w * Math.max(0.0f, Math.min(1.0f, percent)));
-        context.fill(x, y + 1, x + fillW, y + 3, 0xFF3B82F6);
-        context.fill(x + Math.max(0, fillW - 2), y - 1, x + Math.min(w, fillW + 2), y + 5, 0xFFFFFFFF);
+        context.fill(x, y + 1, x + fillW, y + 4, 0xFF3B82F6);
+        context.fill(x + Math.max(0, fillW - 2), y - 1, x + Math.min(w, fillW + 2), y + 6, 0xFFFFFFFF);
+    }
+
+    private String truncate(String s, int len) {
+        if (s == null) return "";
+        return s.length() <= len ? s : s.substring(0, len);
     }
 
     @Override
@@ -391,38 +374,38 @@ public class RecorderScreen extends Screen {
         RecordingConfig cfg = RecordingConfig.get();
 
         if (contextMenuOpen) {
-            int cmW = 128;
-            int cmH = contextMenuItems.length * 14 + 4;
+            int cmW = 142;
+            int cmH = contextMenuItems.length * 15 + 4;
             int cx = Math.min(contextMenuX, this.width - cmW - 4);
             int cy = Math.min(contextMenuY, this.height - cmH - 4);
             if (mx >= cx && mx <= cx + cmW && my >= cy && my <= cy + cmH) {
-                int idx = (int) ((my - cy - 2) / 14);
-                if (idx == 0 && !SOURCES.contains("Display Capture 2")) SOURCES.add("Display Capture 2");
-                else if (idx == 1 && !SOURCES.contains("Game Capture 2")) SOURCES.add("Game Capture 2");
-                else if (idx == 2) this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.VIDEO));
-                else if (idx == 3) this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.AUDIO));
-                else if (idx == 5 && SOURCES.size() > 1) {
-                    SOURCES.remove(Math.min(selectedSource, SOURCES.size() - 1));
-                    selectedSource = Math.max(0, selectedSource - 1);
-                }
+                int idx = (int) ((my - cy - 2) / 15);
+                if (idx == 0) SceneCollectionManager.addSource("Display Capture", UIHelper.Icon.VIDEO);
+                else if (idx == 1) SceneCollectionManager.addSource("Game Capture", UIHelper.Icon.VIDEO);
+                else if (idx == 2) SceneCollectionManager.addSource("Mic/Aux 2", UIHelper.Icon.MICROPHONE);
+                else if (idx == 3) SceneCollectionManager.addSource("In-Game Audio 2", UIHelper.Icon.AUDIO);
+                else if (idx == 4) this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.VIDEO));
+                else if (idx == 5) SceneCollectionManager.removeSelectedSource();
             }
             contextMenuOpen = false;
             return true;
         }
 
         computeFloatingWindowBounds();
-        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
         int pad = 6;
-        int bottomBarH = 13;
-        int dockAreaH = Math.max(78, Math.min(108, (int) (this.winH * 0.38f)));
-        int dockY = this.winY + this.winH - bottomBarH - dockAreaH - 2;
-        int totalDockW = this.winW - pad * 2;
-        int gap = 3;
-        int colW = (totalDockW - gap * 4) / 5;
+        int dockY = winY + 78;
+        int bottomBarH = 15;
+        int dockAreaH = (winY + winH - bottomBarH - 3) - dockY;
+        int totalDockW = winW - pad * 2;
+        int gap = 4;
+        int colW = (totalDockW - gap * 3) / 4;
 
         int scenesX = winX + pad;
         int sourcesX = winX + pad + colW + gap;
+        int mixerX = winX + pad + (colW + gap) * 2 + 5;
+        int mixerW = colW - 10;
 
+        // Right-click in Scenes or Sources opens the OBS Context Menu
         if (click.button() == 1 && mx >= scenesX && mx <= sourcesX + colW && my >= dockY && my <= dockY + dockAreaH) {
             contextMenuOpen = true;
             contextMenuX = (int) mx;
@@ -430,76 +413,75 @@ public class RecorderScreen extends Screen {
             return true;
         }
 
-        if (mx >= scenesX && mx <= scenesX + colW && my >= dockY + 14 && my <= dockY + dockAreaH) {
-            if (my >= dockY + dockAreaH - 12) {
-                int step = Math.max(10, Math.min(15, (colW - 4) / 5));
+        // 1. Scenes Dock Interaction
+        if (mx >= scenesX && mx <= scenesX + colW && my >= dockY + 15 && my <= dockY + dockAreaH) {
+            if (my >= dockY + dockAreaH - 13) {
+                int step = Math.max(12, Math.min(20, (colW - 4) / 5));
                 int relX = (int) (mx - scenesX - 2);
-                if (relX < step) {
-                    SCENES.add("Scene " + (SCENES.size() + 1));
-                    selectedScene = SCENES.size() - 1;
-                } else if (relX < step * 2 && SCENES.size() > 1) {
-                    SCENES.remove(selectedScene);
-                    selectedScene = Math.max(0, selectedScene - 1);
-                } else if (relX < step * 3) {
-                    this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.GENERAL));
-                } else if (relX < step * 4 && selectedScene > 0) {
-                    selectedScene--;
-                } else if (selectedScene < SCENES.size() - 1) {
-                    selectedScene++;
-                }
+                if (relX < step) SceneCollectionManager.addScene();
+                else if (relX < step * 2) SceneCollectionManager.removeSelectedScene();
+                else if (relX < step * 3) this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.GENERAL));
+                else if (relX < step * 4) SceneCollectionManager.moveSceneUp();
+                else SceneCollectionManager.moveSceneDown();
             } else {
-                int idx = (int) ((my - (dockY + 14)) / 12);
-                if (idx >= 0 && idx < SCENES.size()) selectedScene = idx;
+                int idx = (int) ((my - (dockY + 16)) / 15);
+                SceneCollectionManager.setSelectedSceneIdx(idx);
             }
             return true;
         }
 
-        if (mx >= sourcesX && mx <= sourcesX + colW && my >= dockY + 14 && my <= dockY + dockAreaH) {
-            if (my >= dockY + dockAreaH - 12) {
-                int step = Math.max(10, Math.min(15, (colW - 4) / 5));
+        // 2. Sources Dock Interaction (Select, Eye Toggle, Lock Toggle, or Bottom Toolbar)
+        if (mx >= sourcesX && mx <= sourcesX + colW && my >= dockY + 15 && my <= dockY + dockAreaH) {
+            if (my >= dockY + dockAreaH - 13) {
+                int step = Math.max(12, Math.min(20, (colW - 4) / 5));
                 int relX = (int) (mx - sourcesX - 2);
                 if (relX < step) {
                     contextMenuOpen = true;
                     contextMenuX = (int) mx;
-                    contextMenuY = (int) my - 70;
-                } else if (relX < step * 2 && SOURCES.size() > 1) {
-                    SOURCES.remove(Math.min(selectedSource, SOURCES.size() - 1));
-                    selectedSource = Math.max(0, selectedSource - 1);
+                    contextMenuY = (int) my - 85;
+                } else if (relX < step * 2) {
+                    SceneCollectionManager.removeSelectedSource();
                 } else if (relX < step * 3) {
                     this.client.setScreen(new RecorderSettingsScreen(this, RecorderSettingsScreen.Category.VIDEO));
-                } else if (relX < step * 4 && selectedSource > 0) {
-                    selectedSource--;
-                } else if (selectedSource < SOURCES.size() - 1) {
-                    selectedSource++;
                 }
             } else {
-                int idx = (int) ((my - (dockY + 14)) / 12);
-                if (idx >= 0 && idx < SOURCES.size()) {
-                    selectedSource = idx;
-                    String sName = SOURCES.get(idx);
-                    if (sName.contains("Desktop")) cfg.gameAudioEnabled = !cfg.gameAudioEnabled;
-                    else if (sName.contains("Mic")) cfg.microphoneEnabled = !cfg.microphoneEnabled;
-                    RecordingConfig.save();
+                int idx = (int) ((my - (dockY + 16)) / 15);
+                List<SceneCollectionManager.SourceItem> sources = SceneCollectionManager.getSources();
+                if (idx >= 0 && idx < sources.size()) {
+                    SceneCollectionManager.setSelectedSourceIdx(idx);
+                    if (mx >= sourcesX + colW - 12) {
+                        SceneCollectionManager.toggleSourceLock(idx);
+                    } else {
+                        SceneCollectionManager.toggleSourceVisibility(idx);
+                    }
                     this.clearAndInit();
                 }
             }
             return true;
         }
 
-        int mixerX = winX + pad + (colW + gap) * 2 + 4;
-        int mixerW = colW - 8;
-        int dSliderY = dockY + 15 + 16;
-        int mSliderY = dockY + 15 + 26 + 16;
+        // 3. Audio Mixer Sliders & Connected Mic Device Selector Click
+        int dSliderY = dockY + 18 + 19;
+        int mSliderY = dockY + 18 + 34 + 19;
+        int micDevBoxY = dockY + 18 + 68;
 
         if (mx >= mixerX && mx <= mixerX + mixerW) {
-            if (my >= dSliderY - 4 && my <= dSliderY + 7) {
+            if (my >= dSliderY - 4 && my <= dSliderY + 8) {
                 draggingDesktopVol = true;
                 updateVolumeFromMouse(mx, mixerX, mixerW, true);
                 return true;
             }
-            if (my >= mSliderY - 4 && my <= mSliderY + 7) {
+            if (my >= mSliderY - 4 && my <= mSliderY + 8) {
                 draggingMicVol = true;
                 updateVolumeFromMouse(mx, mixerX, mixerW, false);
+                return true;
+            }
+            if (my >= micDevBoxY && my <= micDevBoxY + 16) {
+                List<String> mics = MicrophoneManager.getAvailableMicrophoneDevices();
+                int next = (mics.indexOf(cfg.microphoneDevice) + 1) % mics.size();
+                cfg.microphoneDevice = mics.get(next);
+                RecordingConfig.save();
+                RecordingManager.getInstance().setCustomStatusMessage("Selected Mic: " + cfg.microphoneDevice);
                 return true;
             }
         }
@@ -511,13 +493,12 @@ public class RecorderScreen extends Screen {
     public boolean mouseDragged(Click click, double deltaX, double deltaY) {
         if (draggingDesktopVol || draggingMicVol) {
             computeFloatingWindowBounds();
-        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
             int pad = 6;
-            int totalDockW = this.winW - pad * 2;
-            int gap = 3;
-            int colW = (totalDockW - gap * 4) / 5;
-            int mixerX = winX + pad + (colW + gap) * 2 + 4;
-            int mixerW = colW - 8;
+            int totalDockW = winW - pad * 2;
+            int gap = 4;
+            int colW = (totalDockW - gap * 3) / 4;
+            int mixerX = winX + pad + (colW + gap) * 2 + 5;
+            int mixerW = colW - 10;
             updateVolumeFromMouse(click.x(), mixerX, mixerW, draggingDesktopVol);
             return true;
         }
