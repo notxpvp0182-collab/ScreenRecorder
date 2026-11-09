@@ -1,6 +1,8 @@
 package com.ahmed.screenrecorder.capture;
 
 import org.jcodec.api.SequenceEncoder;
+import org.jcodec.common.Codec;
+import org.jcodec.common.Format;
 import org.jcodec.common.io.NIOUtils;
 import org.jcodec.common.io.SeekableByteChannel;
 import org.jcodec.common.model.ColorSpace;
@@ -29,7 +31,7 @@ public class NativeMjpegMp4Muxer {
         this.fps = Math.max(15, Math.min(120, fps));
 
         this.channel = NIOUtils.writableFileChannel(outputFile.getAbsolutePath());
-        this.encoder = new SequenceEncoder(channel, Rational.R(this.fps, 1));
+        this.encoder = new SequenceEncoder(channel, Rational.R(this.fps, 1), Format.MOV, Codec.H264, null);
         this.rgbPic = Picture.create(this.width, this.height, ColorSpace.RGB);
     }
 
