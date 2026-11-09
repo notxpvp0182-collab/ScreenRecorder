@@ -95,7 +95,7 @@ public class RecordingFileManager {
                 int sec = (int) Math.round(durSec);
                 duration = String.format("%02d:%02d:%02d", sec / 3600, (sec % 3600) / 60, sec % 60);
 
-                Size dim = meta.getDimensions();
+                Size dim = meta.getVideoCodecMeta() != null ? meta.getVideoCodecMeta().getSize() : null;
                 if (dim != null && dim.getWidth() > 0) {
                     resolution = dim.getWidth() + "x" + dim.getHeight();
                 }
