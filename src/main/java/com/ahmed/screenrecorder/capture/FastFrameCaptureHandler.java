@@ -9,12 +9,11 @@ import org.lwjgl.opengl.GL11;
 import java.nio.ByteBuffer;
 
 /**
- * Ultra-Light Scanline Framebuffer Grabber:
- * Instead of reading 1920x1080 (8.3 MB per frame) on the Render Thread, reads only the target
- * output scanlines and downscales horizontally on the fly, cutting OpenGL read time to < 1.5ms!
+ * Single-Shot Lightweight Framebuffer Grabber.
+ * Performs ONE single glReadPixels call and downsamples into the target 640x360 RGB buffer.
  */
 public class FastFrameCaptureHandler {
-    private ByteBuffer singleRowBuffer;
+    private ByteBuffer fullReadBuffer;
 
     public boolean captureScaledRgbFrame(byte[] targetRgbData, int outW, int outH) {
         RenderSystem.assertOnRenderThread();
@@ -24,29 +23,29 @@ public class FastFrameCaptureHandler {
 
         int srcW = fb.textureWidth;
         int srcH = fb.textureHeight;
-        int rowBytes = srcW * 4;
+        int totalBytes = srcW * srcH * 4;
 
-        if (singleRowBuffer == null || singleRowBuffer.capacity() < rowBytes) {
-            singleRowBuffer = BufferUtils.createByteBuffer(rowBytes);
+        if (fullReadBuffer == null || fullReadBuffer.capacity() < totalBytes) {
+            fullReadBuffer = BufferUtils.createByteBuffer(totalBytes);
         }
 
+        fullReadBuffer.clear();
         GL11.glPixelStorei(GL11.GL_PACK_ALIGNMENT, 1);
-        int dstIdx = 0;
+        GL11.glReadPixels(0, 0, srcW, srcH, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, fullReadBuffer);
 
+        int dstIdx = 0;
         for (int y = 0; y < outH; y++) {
             int glY = srcH - 1 - ((y * srcH) / outH);
             if (glY < 0) glY = 0;
             if (glY >= srcH) glY = srcH - 1;
-
-            singleRowBuffer.clear();
-            GL11.glReadPixels(0, glY, srcW, 1, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, singleRowBuffer);
+            int rowOff = glY * srcW * 4;
 
             for (int x = 0; x < outW; x++) {
                 int srcX = (x * srcW) / outW;
-                int idx = srcX << 2;
-                targetRgbData[dstIdx]     = singleRowBuffer.get(idx);
-                targetRgbData[dstIdx + 1] = singleRowBuffer.get(idx + 1);
-                targetRgbData[dstIdx + 2] = singleRowBuffer.get(idx + 2);
+                int idx = rowOff + (srcX << 2);
+                targetRgbData[dstIdx]     = fullReadBuffer.get(idx);
+                targetRgbData[dstIdx + 1] = fullReadBuffer.get(idx + 1);
+                targetRgbData[dstIdx + 2] = fullReadBuffer.get(idx + 2);
                 dstIdx += 3;
             }
         }

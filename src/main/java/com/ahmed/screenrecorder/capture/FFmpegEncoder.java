@@ -59,7 +59,7 @@ public class FFmpegEncoder {
         this.inGameReplayCacheOut.writeInt(NativeMjpegMp4Muxer.PLAYER_CACHE_H);
         this.inGameReplayCacheOut.writeLong(0L);
 
-        this.nativeFFmpegBin = NativeFFmpegExtractor.getExecutableFFmpegPath();
+        this.nativeFFmpegBin = NativeFFmpegExtractor.getReadyFFmpegPathInstantly();
         if (this.nativeFFmpegBin != null) {
             try {
                 this.tempVideoFile = new File(outputFile.getParentFile(), ".raw_" + outputFile.getName());
