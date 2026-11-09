@@ -58,6 +58,7 @@ public class RecorderScreen extends Screen {
     @Override
     protected void init() {
         computeFloatingWindowBounds();
+        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
         RecordingManager mgr = RecordingManager.getInstance();
         RecordingConfig cfg = RecordingConfig.get();
 
@@ -159,6 +160,7 @@ public class RecorderScreen extends Screen {
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         computeFloatingWindowBounds();
+        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
         RecordingManager mgr = RecordingManager.getInstance();
         RecordingConfig cfg = RecordingConfig.get();
 
@@ -183,7 +185,7 @@ public class RecorderScreen extends Screen {
 
         // Draw Floating OBS Window Frame AROUND the crystal-clear 60 FPS Live Preview Viewport!
         context.fill(winX, winY, winX + winW, winY + winH, 0xFF1D1F26);
-        LivePreviewRenderer.renderFullScreenPreview(context, canvasX, canvasY, canvasW, canvasH); // Above preview
+        ZeroCopyGlPreviewHandler.drawPreviewCanvas(context, canvasX, canvasY, canvasW, canvasH); // Above preview
         context.fill(winX, canvasY + canvasH, winX + winW, winY + winH, 0xFF1D1F26); // Below preview
         context.fill(winX, canvasY, canvasX, canvasY + canvasH, 0xFF1D1F26); // Left of preview
         context.fill(canvasX + canvasW, canvasY, winX + winW, canvasY + canvasH, 0xFF1D1F26); // Right of preview
@@ -409,6 +411,7 @@ public class RecorderScreen extends Screen {
         }
 
         computeFloatingWindowBounds();
+        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
         int pad = 6;
         int bottomBarH = 13;
         int dockAreaH = Math.max(78, Math.min(108, (int) (this.winH * 0.38f)));
@@ -508,6 +511,7 @@ public class RecorderScreen extends Screen {
     public boolean mouseDragged(Click click, double deltaX, double deltaY) {
         if (draggingDesktopVol || draggingMicVol) {
             computeFloatingWindowBounds();
+        ZeroCopyGlPreviewHandler.captureOnceOnGuiOpen();
             int pad = 6;
             int totalDockW = this.winW - pad * 2;
             int gap = 3;

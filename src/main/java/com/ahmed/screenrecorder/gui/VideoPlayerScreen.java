@@ -14,28 +14,22 @@ import org.jcodec.common.model.Picture;
 import org.jcodec.scale.ColorUtil;
 import org.jcodec.scale.Transform;
 
-import java.io.DataInputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.RandomAccessFile;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Freeze-Free Instant In-Game Video Player.
- * Uses direct stream reading + color-grouped scanlines so it NEVER freezes at 100% and buttons respond instantly!
- */
 public class VideoPlayerScreen extends Screen {
     private final Screen parent;
     private final File videoFile;
 
-    private static final int DISP_W = 160;
-    private static final int DISP_H = 90;
+    private static final int DISP_W = NativeMjpegMp4Muxer.PLAYER_CACHE_W;
+    private static final int DISP_H = NativeMjpegMp4Muxer.PLAYER_CACHE_H;
     private final int[] pixelBuffer = new int[DISP_W * DISP_H];
 
     private int totalFrames = 1;
     private int currentFrameIdx = 0;
-    private int videoFps = 10;
+    private long totalDurationMs = 10000L;
     private volatile boolean playing = true;
     private volatile int seekRequestFrame = -1;
 
@@ -64,7 +58,7 @@ public class VideoPlayerScreen extends Screen {
         workerRunning.set(true);
         Thread t = new Thread(() -> {
             File streamCache = NativeMjpegMp4Muxer.getReplayCacheFile(videoFile);
-            if (streamCache.exists() && streamCache.length() > 16) {
+            if (streamCache.exists() && streamCache.length() > 24) {
                 playFromFastCache(streamCache);
             } else {
                 playFromJCodecMp4();
@@ -77,19 +71,19 @@ public class VideoPlayerScreen extends Screen {
     private void playFromFastCache(File cacheFile) {
         try (RandomAccessFile raf = new RandomAccessFile(cacheFile, "r")) {
             int magic = raf.readInt();
-            if (magic != 0x4F425356) {
+            if (magic != 0x4F425332) {
                 playFromJCodecMp4();
                 return;
             }
-            raf.readInt(); // w
-            raf.readInt(); // h
-            this.videoFps = Math.max(5, raf.readInt());
-            final int frameBytes = DISP_W * DISP_H * 3;
-            this.totalFrames = Math.max(1, (int) ((raf.length() - 16) / frameBytes));
+            int w = raf.readInt();
+            int h = raf.readInt();
+            this.totalDurationMs = Math.max(1000L, raf.readLong());
+            final int frameBytes = w * h * 3;
+            this.totalFrames = Math.max(1, (int) ((raf.length() - 20) / frameBytes));
             loadProgressPct.set(100);
 
             byte[] raw = new byte[frameBytes];
-            long intervalMs = 1000L / videoFps;
+            long intervalMs = Math.max(16L, this.totalDurationMs / this.totalFrames);
 
             while (workerRunning.get()) {
                 if (seekRequestFrame >= 0) {
@@ -103,7 +97,7 @@ public class VideoPlayerScreen extends Screen {
                 }
 
                 long t0 = System.currentTimeMillis();
-                long offset = 16L + (long) currentFrameIdx * frameBytes;
+                long offset = 20L + (long) currentFrameIdx * frameBytes;
                 if (offset + frameBytes > raf.length()) {
                     currentFrameIdx = 0;
                     playing = false;
@@ -140,12 +134,12 @@ public class VideoPlayerScreen extends Screen {
             FrameGrab grab = FrameGrab.createFrameGrab(ch);
             DemuxerTrackMeta meta = grab.getVideoTrack().getMeta();
             totalFrames = Math.max(1, meta.getTotalFrames());
-            if (meta.getTotalDuration() > 0 && totalFrames > 0) {
-                videoFps = (int) Math.max(5, Math.round(totalFrames / meta.getTotalDuration()));
+            if (meta.getTotalDuration() > 0) {
+                totalDurationMs = Math.round(meta.getTotalDuration() * 1000.0);
             }
             loadProgressPct.set(100);
 
-            long intervalMs = 1000L / Math.max(5, videoFps);
+            long intervalMs = Math.max(16L, totalDurationMs / totalFrames);
 
             while (workerRunning.get()) {
                 if (seekRequestFrame >= 0) {
@@ -259,8 +253,8 @@ public class VideoPlayerScreen extends Screen {
         UIHelper.drawBorder(context, winX, winY, winW, winH, 0xFF3F4454);
 
         context.fill(winX + 1, winY + 1, winX + winW - 1, winY + 15, 0xFF2B2E38);
-        int curSec = currentFrameIdx / Math.max(1, videoFps);
-        int totSec = totalFrames / Math.max(1, videoFps);
+        int totSec = (int) Math.round(totalDurationMs / 1000.0);
+        int curSec = (int) Math.round((currentFrameIdx / (double) Math.max(1, totalFrames)) * totSec);
         String timeStr = String.format(" [%02d:%02d / %02d:%02d]", curSec / 60, curSec % 60, totSec / 60, totSec % 60);
         context.drawCenteredTextWithShadow(this.textRenderer, "OBS Media Player — " + videoFile.getName() + timeStr, winX + winW / 2, winY + 4, 0xFFFFFFFF);
 
@@ -288,7 +282,6 @@ public class VideoPlayerScreen extends Screen {
             String loadTxt = pct < 0 ? "Cannot read video file" : ("Opening Video Stream... " + pct + "%");
             context.drawCenteredTextWithShadow(this.textRenderer, loadTxt, winX + winW / 2, vy + viewH / 2 - 6, 0xFFFFFFFF);
         } else {
-            // Fast non-blocking grouped scanline draw (< 1,200 rectangles per frame -> 60 FPS!)
             for (int gy = 0; gy < DISP_H; gy++) {
                 int py0 = vy + (gy * viewH) / DISP_H;
                 int py1 = vy + ((gy + 1) * viewH) / DISP_H;
@@ -325,7 +318,7 @@ public class VideoPlayerScreen extends Screen {
         int dr = Math.abs(((c1 >> 16) & 0xFF) - ((c2 >> 16) & 0xFF));
         int dg = Math.abs(((c1 >> 8) & 0xFF) - ((c2 >> 8) & 0xFF));
         int db = Math.abs((c1 & 0xFF) - (c2 & 0xFF));
-        return (dr + dg + db) < 16;
+        return (dr + dg + db) < 12;
     }
 
     @Override

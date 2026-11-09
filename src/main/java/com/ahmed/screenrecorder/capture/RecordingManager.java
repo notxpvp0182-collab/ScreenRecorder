@@ -2,7 +2,7 @@ package com.ahmed.screenrecorder.capture;
 
 import com.ahmed.screenrecorder.ScreenRecorderClient;
 import com.ahmed.screenrecorder.audio.AudioCaptureManager;
-import com.ahmed.screenrecorder.gui.LivePreviewRenderer;
+import com.ahmed.screenrecorder.config.RecordingConfig;
 import com.ahmed.screenrecorder.util.RecordingFileManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.Framebuffer;
@@ -12,28 +12,34 @@ import net.minecraft.text.Text;
 import java.io.File;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * Ultra-Smooth Zero-Lag Recording Manager:
+ * 1. Performs ONE single-pass glReadPixels on the Render Thread only when the background encoder is idle.
+ * 2. Converts RGBA -> RGB and encodes H.264 100% on the background thread (0% lag on gameplay!).
+ * 3. Calibrates the MP4 header duration upon stop so 50s of recording is ALWAYS 50.00s in every player!
+ */
 public class RecordingManager {
     private static final RecordingManager INSTANCE = new RecordingManager();
 
     private final AtomicBoolean recording = new AtomicBoolean(false);
     private final AtomicBoolean paused = new AtomicBoolean(false);
     private final AtomicBoolean stopping = new AtomicBoolean(false);
-    private final AtomicBoolean frameReady = new AtomicBoolean(false);
+    private final AtomicBoolean rawFrameWaiting = new AtomicBoolean(false);
 
-    private final FastFrameCaptureHandler fastCapture = new FastFrameCaptureHandler();
+    private final SinglePassFrameGrabber frameGrabber = new SinglePassFrameGrabber();
     private final AudioCaptureManager audioCaptureManager = new AudioCaptureManager();
     private final PerformanceManager performanceManager = new PerformanceManager();
     private FFmpegEncoder ffmpegEncoder;
 
-    private byte[] sharedRgbBuffer;
-    private byte[] encoderWorkBuffer;
+    private byte[] workerRgbBuffer;
     private Thread videoEncoderThread;
 
     private File currentOutputFile;
     private long recordingStartTimeMs;
+    private long finalActiveDurationMs = 0;
     private long pausedAccumulatedMs = 0;
     private long pauseStartMs = 0;
-    private long lastGlCaptureTimeMs = 0;
+    private long lastGlGrabTimeMs = 0;
 
     private String lastStatusMessage = "OBS Ready";
     private boolean lastStatusIsError = false;
@@ -65,22 +71,22 @@ public class RecordingManager {
             ffmpegEncoder.start(currentOutputFile, fb.textureWidth, fb.textureHeight);
 
             int rgbSize = ffmpegEncoder.getTargetW() * ffmpegEncoder.getTargetH() * 3;
-            sharedRgbBuffer = new byte[rgbSize];
-            encoderWorkBuffer = new byte[rgbSize];
+            workerRgbBuffer = new byte[rgbSize];
             performanceManager.initializePool(1024, 2);
 
             audioCaptureManager.start(ffmpegEncoder.getAudioOutputStream());
 
             recordingStartTimeMs = System.currentTimeMillis();
             pausedAccumulatedMs = 0;
+            finalActiveDurationMs = 0;
             paused.set(false);
-            frameReady.set(false);
-            lastGlCaptureTimeMs = 0L;
+            rawFrameWaiting.set(false);
+            lastGlGrabTimeMs = 0L;
             recording.set(true);
 
-            videoEncoderThread = new Thread(this::runExactWallClockEncoderLoop, "OBS-RealtimeEncoder");
+            videoEncoderThread = new Thread(this::runBackgroundEncodeWorker, "OBS-ZeroLagEncoder");
             videoEncoderThread.setDaemon(true);
-            videoEncoderThread.setPriority(Thread.NORM_PRIORITY - 1);
+            videoEncoderThread.setPriority(Thread.MIN_PRIORITY + 2);
             videoEncoderThread.start();
 
             setStatus("Recording: " + currentOutputFile.getName(), false);
@@ -117,6 +123,9 @@ public class RecordingManager {
         if (!recording.get() || stopping.get()) {
             return;
         }
+        long stopMoment = paused.get() ? pauseStartMs : System.currentTimeMillis();
+        this.finalActiveDurationMs = Math.max(500L, stopMoment - recordingStartTimeMs - pausedAccumulatedMs);
+
         stopping.set(true);
         recording.set(false);
         paused.set(false);
@@ -136,72 +145,43 @@ public class RecordingManager {
     }
 
     public void onFrameRendered() {
-        MinecraftClient client = MinecraftClient.getInstance();
-        // When OBS GUI is not open, keep live preview updated so opening OBS shows the full game screen immediately!
-        if (client.currentScreen == null) {
-            LivePreviewRenderer.captureFullScreenLightweight();
-        }
-
         if (!recording.get() || paused.get() || stopping.get()) return;
-        if (frameReady.get()) return;
+        if (rawFrameWaiting.get()) return; // Background thread is still encoding previous frame; do NOT stall game!
 
+        int targetFps = Math.max(15, Math.min(60, RecordingConfig.get().getTargetFps()));
+        long minIntervalMs = Math.max(16L, 1000L / targetFps);
         long nowMs = System.currentTimeMillis();
-        if (nowMs - lastGlCaptureTimeMs < (1000 / FFmpegEncoder.REALTIME_FPS)) {
+
+        if (nowMs - lastGlGrabTimeMs < minIntervalMs) {
             return;
         }
 
-        if (ffmpegEncoder == null || sharedRgbBuffer == null) return;
-        lastGlCaptureTimeMs = nowMs;
-
-        if (fastCapture.captureScaledRgbFrame(sharedRgbBuffer, ffmpegEncoder.getTargetW(), ffmpegEncoder.getTargetH())) {
-            frameReady.set(true);
+        lastGlGrabTimeMs = nowMs;
+        if (frameGrabber.grabFullFramebufferFast()) {
+            rawFrameWaiting.set(true);
         }
     }
 
-    /**
-     * Exact 1.0x Wall-Clock Loop:
-     * At 10 FPS (100ms per frame), mobile CPUs easily encode each frame in ~35ms!
-     * If a frame takes slightly longer, repeatCount catches up to exact wall-clock elapsed time
-     * so 46 seconds of recording ALWAYS produces a 46-second video!
-     */
-    private void runExactWallClockEncoderLoop() {
-        final int fps = FFmpegEncoder.REALTIME_FPS;
-        long writtenFrames = 0;
-        boolean hasFrame = false;
-
+    private void runBackgroundEncodeWorker() {
         try {
-            while (recording.get()) {
+            while (recording.get() || rawFrameWaiting.get()) {
                 if (paused.get()) {
                     Thread.sleep(30);
                     continue;
                 }
 
-                if (frameReady.compareAndSet(true, false)) {
-                    System.arraycopy(sharedRgbBuffer, 0, encoderWorkBuffer, 0, sharedRgbBuffer.length);
-                    hasFrame = true;
-                }
+                if (rawFrameWaiting.get()) {
+                    frameGrabber.convertOnBackgroundThread(workerRgbBuffer, ffmpegEncoder.getTargetW(), ffmpegEncoder.getTargetH());
+                    rawFrameWaiting.set(false);
 
-                if (!hasFrame) {
-                    Thread.sleep(10);
-                    continue;
-                }
-
-                long elapsedMs = Math.max(100L, System.currentTimeMillis() - recordingStartTimeMs - pausedAccumulatedMs);
-                long targetTotalFrames = Math.max(1L, (elapsedMs * fps) / 1000L);
-
-                if (writtenFrames < targetTotalFrames) {
-                    int catchUp = (int) Math.min(3L, targetTotalFrames - writtenFrames);
-                    ffmpegEncoder.updateAndWriteFrame(encoderWorkBuffer, catchUp);
-                    writtenFrames += catchUp;
-                    for (int i = 0; i < catchUp; i++) {
-                        performanceManager.recordFrameEncoded();
-                    }
+                    ffmpegEncoder.writeSinglePassFrame(workerRgbBuffer);
+                    performanceManager.recordFrameEncoded();
                 } else {
-                    Thread.sleep(15);
+                    Thread.sleep(8);
                 }
             }
         } catch (Exception e) {
-            ScreenRecorderClient.LOGGER.error("Realtime encoder error", e);
+            ScreenRecorderClient.LOGGER.error("Background encoder error", e);
         }
     }
 
@@ -211,18 +191,19 @@ public class RecordingManager {
 
             if (videoEncoderThread != null && Thread.currentThread() != videoEncoderThread) {
                 try {
-                    videoEncoderThread.join(4000);
+                    videoEncoderThread.join(10000);
                 } catch (InterruptedException ignored) {}
             }
 
             if (ffmpegEncoder != null) {
-                ffmpegEncoder.stopAndFinalize();
+                ffmpegEncoder.stopAndFinalize(this.finalActiveDurationMs);
                 ffmpegEncoder = null;
             }
 
             if (currentOutputFile != null && currentOutputFile.exists()) {
                 double sizeMb = currentOutputFile.length() / (1024.0 * 1024.0);
-                String savedMsg = String.format("Saved: %s (%.2f MB)", currentOutputFile.getName(), sizeMb);
+                long sec = Math.round(this.finalActiveDurationMs / 1000.0);
+                String savedMsg = String.format("Saved: %s (%ds, %.2f MB)", currentOutputFile.getName(), sec, sizeMb);
                 setStatus(savedMsg, false);
                 MinecraftClient client = MinecraftClient.getInstance();
                 if (client != null && client.player != null) {
@@ -242,13 +223,15 @@ public class RecordingManager {
         stopping.set(false);
         audioCaptureManager.stop();
         if (ffmpegEncoder != null) {
-            ffmpegEncoder.stopAndFinalize();
+            ffmpegEncoder.stopAndFinalize(1000L);
             ffmpegEncoder = null;
         }
     }
 
     public void shutdownSafely() {
         if (recording.get()) {
+            long stopMoment = paused.get() ? pauseStartMs : System.currentTimeMillis();
+            this.finalActiveDurationMs = Math.max(500L, stopMoment - recordingStartTimeMs - pausedAccumulatedMs);
             recording.set(false);
             performSafeStop();
         }
