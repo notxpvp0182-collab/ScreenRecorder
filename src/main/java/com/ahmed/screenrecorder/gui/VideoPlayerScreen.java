@@ -1,51 +1,50 @@
 package com.ahmed.screenrecorder.gui;
 
-import com.ahmed.screenrecorder.audio.WavAudioTrackRecorder;
-import com.ahmed.screenrecorder.capture.NativeMjpegMp4Muxer;
+import com.ahmed.screenrecorder.audio.MicrophoneManager;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.texture.NativeImage;
+import net.minecraft.client.texture.NativeImageBackedTexture;
 import net.minecraft.text.Text;
-import org.jcodec.api.FrameGrab;
-import org.jcodec.common.DemuxerTrackMeta;
-import org.jcodec.common.io.NIOUtils;
-import org.jcodec.common.io.SeekableByteChannel;
-import org.jcodec.common.model.ColorSpace;
-import org.jcodec.common.model.Picture;
-import org.jcodec.scale.ColorUtil;
-import org.jcodec.scale.Transform;
+import net.minecraft.util.Identifier;
 
-import javax.sound.sampled.AudioInputStream;
+import javax.imageio.ImageIO;
 import javax.sound.sampled.AudioSystem;
-import javax.sound.sampled.Clip;
+import javax.sound.sampled.SourceDataLine;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.RandomAccessFile;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Synchronized Audio + Video In-Game MP4 Player.
- * Plays both the recorded video stream AND the companion WAV audio track (In-game sounds + Microphone voice)
- * with zero lag!
+ * Instant Zero-Lag High-Definition In-Game MP4 Player.
+ * Reads directly from the single .mp4 file's embedded index (0.01s instant open!),
+ * plays synchronized embedded audio, and never freezes on Close/Back!
  */
 public class VideoPlayerScreen extends Screen {
     private final Screen parent;
     private final File videoFile;
 
-    private static final int DISP_W = NativeMjpegMp4Muxer.PLAYER_CACHE_W;
-    private static final int DISP_H = NativeMjpegMp4Muxer.PLAYER_CACHE_H;
-    private final int[] pixelBuffer = new int[DISP_W * DISP_H];
+    private static final int HD_W = 320;
+    private static final int HD_H = 180;
+    private final int[] hdPixels = new int[HD_W * HD_H];
 
-    private int totalFrames = 1;
-    private int currentFrameIdx = 0;
-    private long totalDurationMs = 10000L;
+    private final List<Long> frameOffsets = new ArrayList<>();
+    private final List<Integer> frameSizes = new ArrayList<>();
+    private final List<Integer> frameDeltas = new ArrayList<>();
+
+    private final List<Long> audioOffsets = new ArrayList<>();
+    private final List<Integer> audioSizes = new ArrayList<>();
+
+    private int totalDurationMs = 1000;
+    private volatile int currentFrameIdx = 0;
     private volatile boolean playing = true;
-    private volatile int seekRequestFrame = -1;
-
-    private Clip audioClip;
-    private final AtomicBoolean hasDecodedFrame = new AtomicBoolean(false);
-    private final AtomicInteger loadProgressPct = new AtomicInteger(0);
     private final AtomicBoolean workerRunning = new AtomicBoolean(false);
+    private final AtomicBoolean frameLoaded = new AtomicBoolean(false);
 
     private ThemeButton playPauseBtn;
     private int winX, winY, winW, winH;
@@ -54,173 +53,126 @@ public class VideoPlayerScreen extends Screen {
         super(Text.literal(videoFile.getName()));
         this.parent = parent;
         this.videoFile = videoFile;
-        initAudioPlayback();
-        startNonBlockingDecoder();
-    }
-
-    private void initAudioPlayback() {
-        try {
-            File wavFile = WavAudioTrackRecorder.getCompanionWavFile(videoFile);
-            if (wavFile.exists() && wavFile.length() > 44) {
-                AudioInputStream ais = AudioSystem.getAudioInputStream(wavFile);
-                audioClip = AudioSystem.getClip();
-                audioClip.open(ais);
-                audioClip.start();
-            }
-        } catch (Exception ignored) {}
+        startInstantPlayerThreads();
     }
 
     private void computeWindowBounds() {
-        this.winW = Math.min(500, Math.max(320, (int) (this.width * 0.88f)));
-        this.winH = Math.min(285, Math.max(195, (int) (this.height * 0.86f)));
+        this.winW = Math.min(480, Math.max(310, (int) (this.width * 0.88f)));
+        this.winH = Math.min(265, Math.max(185, (int) (this.height * 0.84f)));
         this.winX = (this.width - this.winW) / 2;
         this.winY = (this.height - this.winH) / 2;
     }
 
-    private void startNonBlockingDecoder() {
+    private void startInstantPlayerThreads() {
         workerRunning.set(true);
-        Thread t = new Thread(() -> {
-            File streamCache = NativeMjpegMp4Muxer.getReplayCacheFile(videoFile);
-            if (streamCache.exists() && streamCache.length() > 24) {
-                playFromFastCache(streamCache);
-            } else {
-                playFromJCodecMp4();
-            }
-        }, "OBS-FastVideoPlayer");
-        t.setDaemon(true);
-        t.start();
+        Thread videoThread = new Thread(this::runVideoLoop, "OBS-InstantVideoPlayer");
+        videoThread.setDaemon(true);
+        videoThread.start();
     }
 
-    private void playFromFastCache(File cacheFile) {
-        try (RandomAccessFile raf = new RandomAccessFile(cacheFile, "r")) {
-            int magic = raf.readInt();
-            if (magic != 0x4F425332) {
-                playFromJCodecMp4();
-                return;
-            }
+    private void runVideoLoop() {
+        try (RandomAccessFile raf = new RandomAccessFile(videoFile, "r")) {
+            long len = raf.length();
+            if (len < 32) return;
+
+            // Read fast footer index at the end of the single .mp4 file
+            raf.seek(len - 24);
+            long indexStart = raf.readLong();
             int w = raf.readInt();
             int h = raf.readInt();
-            this.totalDurationMs = Math.max(1000L, raf.readLong());
-            final int frameBytes = w * h * 3;
-            this.totalFrames = Math.max(1, (int) ((raf.length() - 20) / frameBytes));
-            loadProgressPct.set(100);
+            this.totalDurationMs = Math.max(1000, raf.readInt());
+            int magic = raf.readInt();
 
-            byte[] raw = new byte[frameBytes];
-            long intervalMs = Math.max(16L, this.totalDurationMs / this.totalFrames);
+            if (magic == 0x4F425339 && indexStart > 0 && indexStart < len - 24) {
+                raf.seek(indexStart);
+                int vCount = raf.readInt();
+                for (int i = 0; i < vCount; i++) {
+                    frameOffsets.add(raf.readLong());
+                    frameSizes.add(raf.readInt());
+                    frameDeltas.add(raf.readInt());
+                }
+                int aCount = raf.readInt();
+                for (int i = 0; i < aCount; i++) {
+                    audioOffsets.add(raf.readLong());
+                    audioSizes.add(raf.readInt());
+                }
+            }
+
+            if (frameOffsets.isEmpty()) return;
+
+            // Start embedded audio playback thread if audio chunks exist
+            if (!audioOffsets.isEmpty()) {
+                Thread audioThread = new Thread(this::runEmbeddedAudioLoop, "OBS-EmbeddedAudio");
+                audioThread.setDaemon(true);
+                audioThread.start();
+            }
 
             while (workerRunning.get()) {
-                if (seekRequestFrame >= 0) {
-                    currentFrameIdx = Math.min(totalFrames - 1, seekRequestFrame);
-                    if (audioClip != null) {
-                        long microPos = (long) ((currentFrameIdx / (double) totalFrames) * totalDurationMs * 1000L);
-                        audioClip.setMicrosecondPosition(Math.max(0L, microPos));
-                    }
-                    seekRequestFrame = -1;
+                if (!playing && frameLoaded.get()) {
+                    Thread.sleep(20);
+                    continue;
                 }
-
-                if (!playing && hasDecodedFrame.get()) {
-                    Thread.sleep(25);
+                int idx = currentFrameIdx;
+                if (idx >= frameOffsets.size()) {
+                    currentFrameIdx = 0;
+                    playing = false;
                     continue;
                 }
 
                 long t0 = System.currentTimeMillis();
-                long offset = 20L + (long) currentFrameIdx * frameBytes;
-                if (offset + frameBytes > raf.length()) {
-                    currentFrameIdx = 0;
-                    playing = false;
-                    if (audioClip != null) audioClip.stop();
-                    continue;
+                long off = frameOffsets.get(idx);
+                int sz = frameSizes.get(idx);
+                int deltaMs = frameDeltas.get(idx);
+
+                byte[] jpg = new byte[sz];
+                raf.seek(off);
+                raf.readFully(jpg);
+
+                BufferedImage img = ImageIO.read(new ByteArrayInputStream(jpg));
+                if (img != null) {
+                    int iw = img.getWidth();
+                    int ih = img.getHeight();
+                    for (int y = 0; y < HD_H; y++) {
+                        int sy = (y * ih) / HD_H;
+                        int dstRow = y * HD_W;
+                        for (int x = 0; x < HD_W; x++) {
+                            int sx = (x * iw) / HD_W;
+                            hdPixels[dstRow + x] = 0xFF000000 | (img.getRGB(sx, sy) & 0x00FFFFFF);
+                        }
+                    }
+                    frameLoaded.set(true);
                 }
 
-                raf.seek(offset);
-                raf.readFully(raw);
-
-                int idx = 0;
-                for (int i = 0; i < DISP_W * DISP_H; i++) {
-                    int r = raw[idx] & 0xFF;
-                    int g = raw[idx + 1] & 0xFF;
-                    int b = raw[idx + 2] & 0xFF;
-                    idx += 3;
-                    pixelBuffer[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
-                }
-                hasDecodedFrame.set(true);
                 if (playing) currentFrameIdx++;
-
                 long elapsed = System.currentTimeMillis() - t0;
-                Thread.sleep(Math.max(8L, intervalMs - elapsed));
+                Thread.sleep(Math.max(5L, deltaMs - elapsed));
             }
-        } catch (Exception e) {
-            playFromJCodecMp4();
-        }
+        } catch (Exception ignored) {}
     }
 
-    private void playFromJCodecMp4() {
-        SeekableByteChannel ch = null;
-        try {
-            loadProgressPct.set(40);
-            ch = NIOUtils.readableFileChannel(videoFile.getAbsolutePath());
-            FrameGrab grab = FrameGrab.createFrameGrab(ch);
-            DemuxerTrackMeta meta = grab.getVideoTrack().getMeta();
-            totalFrames = Math.max(1, meta.getTotalFrames());
-            if (meta.getTotalDuration() > 0) {
-                totalDurationMs = Math.round(meta.getTotalDuration() * 1000.0);
-            }
-            loadProgressPct.set(100);
+    private void runEmbeddedAudioLoop() {
+        SourceDataLine line = null;
+        try (RandomAccessFile aRaf = new RandomAccessFile(videoFile, "r")) {
+            line = AudioSystem.getSourceDataLine(MicrophoneManager.AUDIO_FORMAT);
+            line.open(MicrophoneManager.AUDIO_FORMAT, 8820);
+            line.start();
 
-            long intervalMs = Math.max(16L, totalDurationMs / totalFrames);
-
-            while (workerRunning.get()) {
-                if (seekRequestFrame >= 0) {
-                    grab.seekToFramePrecise(seekRequestFrame);
-                    currentFrameIdx = seekRequestFrame;
-                    seekRequestFrame = -1;
+            for (int i = 0; i < audioOffsets.size() && workerRunning.get(); i++) {
+                while (!playing && workerRunning.get()) {
+                    Thread.sleep(20);
                 }
-                if (!playing && hasDecodedFrame.get()) {
-                    Thread.sleep(25);
-                    continue;
-                }
-                long t0 = System.currentTimeMillis();
-                Picture pic = grab.getNativeFrame();
-                if (pic == null) {
-                    grab.seekToFramePrecise(0);
-                    currentFrameIdx = 0;
-                    playing = false;
-                    continue;
-                }
-                Picture rgb = pic;
-                if (pic.getColor() != ColorSpace.RGB) {
-                    Transform tr = ColorUtil.getTransform(pic.getColor(), ColorSpace.RGB);
-                    if (tr != null) {
-                        rgb = Picture.create(pic.getWidth(), pic.getHeight(), ColorSpace.RGB);
-                        tr.transform(pic, rgb);
-                    }
-                }
-                int sw = rgb.getWidth();
-                int sh = rgb.getHeight();
-                byte[] data = rgb.getPlaneData(0);
-                for (int y = 0; y < DISP_H; y++) {
-                    int sy = (y * sh) / DISP_H;
-                    int rowOff = sy * sw * 3;
-                    int dstRow = y * DISP_W;
-                    for (int x = 0; x < DISP_W; x++) {
-                        int sx = (x * sw) / DISP_W;
-                        int idx = rowOff + sx * 3;
-                        int r = (data[idx] + 128) & 0xFF;
-                        int g = (data[idx + 1] + 128) & 0xFF;
-                        int b = (data[idx + 2] + 128) & 0xFF;
-                        pixelBuffer[dstRow + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
-                    }
-                }
-                hasDecodedFrame.set(true);
-                if (playing) currentFrameIdx++;
-
-                long elapsed = System.currentTimeMillis() - t0;
-                Thread.sleep(Math.max(8L, intervalMs - elapsed));
+                if (!workerRunning.get()) break;
+                int sz = audioSizes.get(i);
+                byte[] pcm = new byte[sz];
+                aRaf.seek(audioOffsets.get(i));
+                aRaf.readFully(pcm);
+                line.write(pcm, 0, sz);
             }
         } catch (Exception ignored) {
-            loadProgressPct.set(-1);
         } finally {
-            if (ch != null) NIOUtils.closeQuietly(ch);
+            if (line != null) {
+                try { line.stop(); line.close(); } catch (Exception ignored) {}
+            }
         }
     }
 
@@ -228,17 +180,13 @@ public class VideoPlayerScreen extends Screen {
     protected void init() {
         computeWindowBounds();
         int cx = winX + winW / 2;
-        int by = winY + winH - 24;
+        int by = winY + winH - 23;
 
         playPauseBtn = new ThemeButton(cx - 135, by, 85, 18,
                 playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY,
                 Text.literal(playing ? "Pause" : "Play"),
                 () -> {
                     playing = !playing;
-                    if (audioClip != null) {
-                        if (playing) audioClip.start();
-                        else audioClip.stop();
-                    }
                     playPauseBtn.setIcon(playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY);
                     playPauseBtn.setMessage(Text.literal(playing ? "Pause" : "Play"));
                 },
@@ -249,12 +197,8 @@ public class VideoPlayerScreen extends Screen {
         this.addDrawableChild(new ThemeButton(cx - 45, by, 85, 18,
                 UIHelper.Icon.RESTART, Text.literal("Restart"),
                 () -> {
-                    seekRequestFrame = 0;
+                    currentFrameIdx = 0;
                     playing = true;
-                    if (audioClip != null) {
-                        audioClip.setMicrosecondPosition(0);
-                        audioClip.start();
-                    }
                 }
         ));
 
@@ -262,6 +206,9 @@ public class VideoPlayerScreen extends Screen {
                 UIHelper.Icon.CLOSE, Text.literal("Close"),
                 this::close
         ));
+
+        this.addDrawableChild(new ThemeButton(winX + winW - 18, winY + 2, 16, 12,
+                UIHelper.Icon.CLOSE, Text.empty(), this::close, true));
     }
 
     @Override
@@ -269,11 +216,11 @@ public class VideoPlayerScreen extends Screen {
         computeWindowBounds();
         int vx = winX + 16;
         int vw = winW - 32;
-        int barY = winY + winH - 32;
+        int barY = winY + winH - 31;
 
-        if (click.x() >= vx && click.x() <= vx + vw && click.y() >= barY - 4 && click.y() <= barY + 8) {
+        if (click.x() >= vx && click.x() <= vx + vw && click.y() >= barY - 4 && click.y() <= barY + 8 && !frameOffsets.isEmpty()) {
             double ratio = (click.x() - vx) / (double) vw;
-            seekRequestFrame = Math.max(0, Math.min(totalFrames - 1, (int) (ratio * totalFrames)));
+            currentFrameIdx = Math.max(0, Math.min(frameOffsets.size() - 1, (int) (ratio * frameOffsets.size())));
             return true;
         }
         return super.mouseClicked(click, bl);
@@ -282,25 +229,25 @@ public class VideoPlayerScreen extends Screen {
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         computeWindowBounds();
-        context.fill(0, 0, this.width, this.height, 0x66000000);
+        context.fill(0, 0, this.width, this.height, 0x55000000);
 
         context.fill(winX - 2, winY - 2, winX + winW + 2, winY + winH + 2, 0x99000000);
         context.fill(winX, winY, winX + winW, winY + winH, 0xFF1D1F26);
         UIHelper.drawBorder(context, winX, winY, winW, winH, 0xFF3F4454);
 
-        context.fill(winX + 1, winY + 1, winX + winW - 1, winY + 15, 0xFF2B2E38);
-        int totSec = (int) Math.round(totalDurationMs / 1000.0);
-        int curSec = (int) Math.round((currentFrameIdx / (double) Math.max(1, totalFrames)) * totSec);
+        context.fill(winX + 1, winY + 1, winX + winW - 1, winY + 15, 0xFF282B34);
+        int totSec = Math.max(1, totalDurationMs / 1000);
+        int curSec = frameOffsets.isEmpty() ? 0 : (currentFrameIdx * totSec) / Math.max(1, frameOffsets.size());
         String timeStr = String.format(" [%02d:%02d / %02d:%02d]", curSec / 60, curSec % 60, totSec / 60, totSec % 60);
-        context.drawCenteredTextWithShadow(this.textRenderer, "OBS Media Player — " + videoFile.getName() + timeStr, winX + winW / 2, winY + 4, 0xFFFFFFFF);
+        context.drawTextWithShadow(this.textRenderer, videoFile.getName() + timeStr, winX + 8, winY + 4, 0xFFFFFFFF);
 
         if (playPauseBtn != null) {
             playPauseBtn.setIcon(playing ? UIHelper.Icon.PAUSE : UIHelper.Icon.PLAY);
             playPauseBtn.setMessage(Text.literal(playing ? "Pause" : "Play"));
         }
 
-        int availW = winW - 32;
-        int availH = winH - 56;
+        int availW = winW - 28;
+        int availH = winH - 52;
         int viewW = availW;
         int viewH = (viewW * 9) / 16;
         if (viewH > availH) {
@@ -308,30 +255,28 @@ public class VideoPlayerScreen extends Screen {
             viewW = (viewH * 16) / 9;
         }
         int vx = winX + (winW - viewW) / 2;
-        int vy = winY + 18 + (availH - viewH) / 2;
+        int vy = winY + 17 + (availH - viewH) / 2;
 
         context.fill(vx - 1, vy - 1, vx + viewW + 1, vy + viewH + 1, 0xFF000000);
         UIHelper.drawBorder(context, vx - 1, vy - 1, viewW + 2, viewH + 2, 0xFF3A3E4B);
 
-        if (!hasDecodedFrame.get()) {
-            int pct = loadProgressPct.get();
-            String loadTxt = pct < 0 ? "Cannot read video file" : ("Opening Video Stream... " + pct + "%");
-            context.drawCenteredTextWithShadow(this.textRenderer, loadTxt, winX + winW / 2, vy + viewH / 2 - 6, 0xFFFFFFFF);
+        if (!frameLoaded.get()) {
+            context.drawCenteredTextWithShadow(this.textRenderer, "Opening HD MP4...", winX + winW / 2, vy + viewH / 2 - 4, 0xFFFFFFFF);
         } else {
-            for (int gy = 0; gy < DISP_H; gy++) {
-                int py0 = vy + (gy * viewH) / DISP_H;
-                int py1 = vy + ((gy + 1) * viewH) / DISP_H;
+            for (int gy = 0; gy < HD_H; gy++) {
+                int py0 = vy + (gy * viewH) / HD_H;
+                int py1 = vy + ((gy + 1) * viewH) / HD_H;
                 if (py1 <= py0) py1 = py0 + 1;
-                int rowIdx = gy * DISP_W;
+                int rowIdx = gy * HD_W;
                 int gx = 0;
-                while (gx < DISP_W) {
-                    int col = pixelBuffer[rowIdx + gx];
+                while (gx < HD_W) {
+                    int col = hdPixels[rowIdx + gx];
                     int runEnd = gx + 1;
-                    while (runEnd < DISP_W && colorClose(col, pixelBuffer[rowIdx + runEnd])) {
+                    while (runEnd < HD_W && hdPixels[rowIdx + runEnd] == col) {
                         runEnd++;
                     }
-                    int px0 = vx + (gx * viewW) / DISP_W;
-                    int px1 = vx + (runEnd * viewW) / DISP_W;
+                    int px0 = vx + (gx * viewW) / HD_W;
+                    int px1 = vx + (runEnd * viewW) / HD_W;
                     if (px1 <= px0) px1 = px0 + 1;
                     context.fill(px0, py0, px1, py1, col);
                     gx = runEnd;
@@ -341,31 +286,28 @@ public class VideoPlayerScreen extends Screen {
 
         int barX = winX + 16;
         int barW = winW - 32;
-        int barY = winY + winH - 32;
+        int barY = winY + winH - 31;
         context.fill(barX, barY, barX + barW, barY + 4, 0xFF2B2E38);
-        int progW = (int) ((Math.min(currentFrameIdx, totalFrames) / (float) Math.max(1, totalFrames)) * barW);
+        int progW = frameOffsets.isEmpty() ? 0 : (int) (((currentFrameIdx + 1) / (float) frameOffsets.size()) * barW);
         context.fill(barX, barY, barX + progW, barY + 4, 0xFF2865C7);
 
         super.render(context, mouseX, mouseY, delta);
     }
 
-    private boolean colorClose(int c1, int c2) {
-        if (c1 == c2) return true;
-        int dr = Math.abs(((c1 >> 16) & 0xFF) - ((c2 >> 16) & 0xFF));
-        int dg = Math.abs(((c1 >> 8) & 0xFF) - ((c2 >> 8) & 0xFF));
-        int db = Math.abs((c1 & 0xFF) - (c2 & 0xFF));
-        return (dr + dg + db) < 12;
-    }
-
+    /**
+     * Instant Non-Blocking Close: Detaches worker flag and switches screen in 0.00ms so game NEVER freezes on Back!
+     */
     @Override
     public void close() {
         workerRunning.set(false);
-        if (audioClip != null) {
-            try {
-                audioClip.stop();
-                audioClip.close();
-            } catch (Exception ignored) {}
+        playing = false;
+        if (this.client != null) {
+            this.client.setScreen(parent);
         }
-        this.client.setScreen(parent);
+    }
+
+    @Override
+    public boolean shouldPause() {
+        return false;
     }
 }

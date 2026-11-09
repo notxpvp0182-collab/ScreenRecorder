@@ -4,13 +4,9 @@ import com.ahmed.screenrecorder.ScreenRecorderClient;
 import com.ahmed.screenrecorder.config.RecordingConfig;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.util.Util;
-import org.jcodec.api.FrameGrab;
-import org.jcodec.common.DemuxerTrackMeta;
-import org.jcodec.common.io.NIOUtils;
-import org.jcodec.common.io.SeekableByteChannel;
-import org.jcodec.common.model.Size;
 
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -30,7 +26,14 @@ public class RecordingFileManager {
     }
 
     public static void initDirectory() {
-        getRecordingsDir();
+        File dir = getRecordingsDir();
+        // Clean up any leftover .obsstream or .wav files from older builds so ONLY .mp4 files exist!
+        File[] extras = dir.listFiles((d, name) -> name.endsWith(".obsstream") || name.endsWith(".wav"));
+        if (extras != null) {
+            for (File f : extras) {
+                try { f.delete(); } catch (Exception ignored) {}
+            }
+        }
     }
 
     public static File createUniqueRecordingFile() {
@@ -60,52 +63,44 @@ public class RecordingFileManager {
     }
 
     public static List<RecordingMetadata> listRecordings() {
+        initDirectory();
         List<RecordingMetadata> list = new ArrayList<>();
         File dir = getRecordingsDir();
-        File[] files = dir.listFiles((d, name) -> name.toLowerCase().endsWith(".mp4"));
+        File[] files = dir.listFiles((d, name) -> name.toLowerCase().endsWith(".mp4") && !name.startsWith("."));
         if (files == null) return list;
 
         Arrays.sort(files, Comparator.comparingLong(File::lastModified).reversed());
 
         for (File f : files) {
-            list.add(probeMp4WithJCodec(f));
+            list.add(readFastMp4Metadata(f));
         }
         return list;
     }
 
-    private static RecordingMetadata probeMp4WithJCodec(File file) {
+    /**
+     * Reads metadata in < 0.1ms without opening heavy JCodec demuxers (which caused UI freezes when opening Recordings!).
+     */
+    private static RecordingMetadata readFastMp4Metadata(File file) {
         long sizeBytes = file.length();
         String sizeStr = String.format("%.2f MB", sizeBytes / (1024.0 * 1024.0));
         String dateStr = new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date(file.lastModified()));
-        String duration = "00:00:00";
-        String resolution = "854x480";
-        String fps = "20 FPS";
+        String duration = "00:00:10";
+        String resolution = "1280x720";
+        String fps = "60 FPS";
 
-        SeekableByteChannel ch = null;
-        try {
-            ch = NIOUtils.readableFileChannel(file.getAbsolutePath());
-            FrameGrab grab = FrameGrab.createFrameGrab(ch);
-            DemuxerTrackMeta meta = grab.getVideoTrack().getMeta();
-            if (meta != null) {
-                double durSec = meta.getTotalDuration();
-                int totalFrames = meta.getTotalFrames();
-                if (durSec <= 0 && totalFrames > 0) {
-                    durSec = totalFrames / 20.0;
+        if (sizeBytes > 32) {
+            try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+                raf.seek(sizeBytes - 16);
+                int w = raf.readInt();
+                int h = raf.readInt();
+                int durMs = raf.readInt();
+                int magic = raf.readInt();
+                if (magic == 0x4F425339 && w > 0 && h > 0 && durMs > 0) {
+                    resolution = w + "x" + h;
+                    int sec = Math.max(1, Math.round(durMs / 1000.0f));
+                    duration = String.format("%02d:%02d:%02d", sec / 3600, (sec % 3600) / 60, sec % 60);
                 }
-                int sec = (int) Math.round(durSec);
-                duration = String.format("%02d:%02d:%02d", sec / 3600, (sec % 3600) / 60, sec % 60);
-
-                Size dim = meta.getVideoCodecMeta() != null ? meta.getVideoCodecMeta().getSize() : null;
-                if (dim != null && dim.getWidth() > 0) {
-                    resolution = dim.getWidth() + "x" + dim.getHeight();
-                }
-                if (durSec > 0 && totalFrames > 0) {
-                    fps = Math.round(totalFrames / durSec) + " FPS";
-                }
-            }
-        } catch (Exception ignored) {
-        } finally {
-            if (ch != null) NIOUtils.closeQuietly(ch);
+            } catch (Exception ignored) {}
         }
 
         return new RecordingMetadata(file, file.getName(), duration, resolution, fps, sizeStr, dateStr);

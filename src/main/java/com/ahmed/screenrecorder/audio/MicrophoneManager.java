@@ -1,9 +1,11 @@
 package com.ahmed.screenrecorder.audio;
 
-import com.ahmed.screenrecorder.ScreenRecorderClient;
 import com.ahmed.screenrecorder.config.RecordingConfig;
 
 import javax.sound.sampled.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -12,7 +14,9 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Automatic Hardware & Mobile Microphone Detector and Non-Blocking Audio Capture Manager.
+ * Real-Time Hardware Microphone Scanner.
+ * Queries both Java Sound TargetDataLines AND Linux/Android ALSA (/proc/asound/cards) in real time
+ * so ONLY genuinely connected microphones/headsets appear in the selector!
  */
 public class MicrophoneManager {
     public static final AudioFormat AUDIO_FORMAT = new AudioFormat(44100.0f, 16, 2, true, false);
@@ -22,23 +26,11 @@ public class MicrophoneManager {
     private boolean isMonoLine = false;
     private final AudioProcessor dsp = new AudioProcessor();
     private final AtomicBoolean active = new AtomicBoolean(false);
-    private static List<String> cachedMicList = null;
-    private static long lastScanTimeMs = 0;
 
-    /**
-     * Automatically detects all connected hardware microphones on PC & Mobile and provides
-     * clear selectable profiles so the user can always pick their active mic in Settings & Mixer!
-     */
     public static List<String> getAvailableMicrophoneDevices() {
-        long now = System.currentTimeMillis();
-        if (cachedMicList != null && (now - lastScanTimeMs) < 5000) {
-            return cachedMicList;
-        }
-        lastScanTimeMs = now;
+        Set<String> realDevices = new LinkedHashSet<>();
 
-        Set<String> devices = new LinkedHashSet<>();
-        devices.add("Auto-Detect Default Mic");
-
+        // 1. Scan Java Sound API Hardware Capture Mixers
         try {
             DataLine.Info stereoInfo = new DataLine.Info(TargetDataLine.class, AUDIO_FORMAT);
             DataLine.Info monoInfo = new DataLine.Info(TargetDataLine.class, MONO_FALLBACK);
@@ -47,28 +39,40 @@ public class MicrophoneManager {
                     Mixer mixer = AudioSystem.getMixer(mixerInfo);
                     if (mixer.isLineSupported(stereoInfo) || mixer.isLineSupported(monoInfo)) {
                         String name = mixerInfo.getName();
-                        if (name != null && !name.isBlank() && !name.contains("Port ")) {
-                            devices.add(name.trim());
+                        if (name != null && !name.isBlank() && !name.startsWith("Port ")) {
+                            realDevices.add(name.trim());
                         }
                     }
                 } catch (Exception ignored) {}
             }
         } catch (Exception ignored) {}
 
-        // Ensure mobile & PC standard input channels are always selectable
-        devices.add("Built-in Device Mic");
-        devices.add("Headset / Earphone Mic");
-        devices.add("Bluetooth / USB Mic");
+        // 2. Scan real Linux/Android ALSA sound cards (/proc/asound/cards) if running on Android/Linux
+        File alsaCards = new File("/proc/asound/cards");
+        if (alsaCards.exists()) {
+            try (BufferedReader br = new BufferedReader(new FileReader(alsaCards))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = line.trim();
+                    if (!line.isEmpty() && Character.isDigit(line.charAt(0)) && line.contains(":")) {
+                        String cardName = line.substring(line.indexOf(':') + 1).trim();
+                        if (!cardName.isEmpty()) {
+                            realDevices.add("ALSA: " + cardName);
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
 
-        cachedMicList = new ArrayList<>(devices);
-        return cachedMicList;
+        if (realDevices.isEmpty()) {
+            realDevices.add("System Default Mic");
+        }
+        return new ArrayList<>(realDevices);
     }
 
     public boolean start() {
         RecordingConfig cfg = RecordingConfig.get();
-        if (!cfg.microphoneEnabled) {
-            return false;
-        }
+        if (!cfg.microphoneEnabled) return false;
 
         try {
             TargetDataLine selectedLine = null;
@@ -77,7 +81,6 @@ public class MicrophoneManager {
             DataLine.Info stereoInfo = new DataLine.Info(TargetDataLine.class, AUDIO_FORMAT);
             DataLine.Info monoInfo = new DataLine.Info(TargetDataLine.class, MONO_FALLBACK);
 
-            // Try matching user-selected mixer device first
             for (Mixer.Info mixerInfo : AudioSystem.getMixerInfo()) {
                 if (mixerInfo.getName() != null && mixerInfo.getName().equalsIgnoreCase(cfg.microphoneDevice)) {
                     Mixer mixer = AudioSystem.getMixer(mixerInfo);
@@ -92,7 +95,6 @@ public class MicrophoneManager {
                 }
             }
 
-            // Fallback to default system microphone line (Stereo or Mono)
             if (selectedLine == null) {
                 if (AudioSystem.isLineSupported(stereoInfo)) {
                     selectedLine = (TargetDataLine) AudioSystem.getLine(stereoInfo);
@@ -102,9 +104,7 @@ public class MicrophoneManager {
                 }
             }
 
-            if (selectedLine == null) {
-                return false;
-            }
+            if (selectedLine == null) return false;
 
             AudioFormat fmt = isMonoLine ? MONO_FALLBACK : AUDIO_FORMAT;
             this.targetLine = selectedLine;
@@ -123,7 +123,6 @@ public class MicrophoneManager {
             Arrays.fill(buffer, 0, length, (byte) 0);
             return;
         }
-
         try {
             int avail = targetLine.available();
             if (avail > 0) {
@@ -151,13 +150,8 @@ public class MicrophoneManager {
 
             RecordingConfig cfg = RecordingConfig.get();
             dsp.processMicrophoneBuffer(
-                    buffer,
-                    length,
-                    cfg.microphoneVolume,
-                    cfg.microphoneGainDb,
-                    cfg.noiseSuppression,
-                    cfg.noiseGate,
-                    cfg.noiseGateThresholdDb
+                    buffer, length, cfg.microphoneVolume, cfg.microphoneGainDb,
+                    cfg.noiseSuppression, cfg.noiseGate, cfg.noiseGateThresholdDb
             );
         } catch (Exception e) {
             Arrays.fill(buffer, 0, length, (byte) 0);
@@ -167,10 +161,7 @@ public class MicrophoneManager {
     public void stop() {
         active.set(false);
         if (targetLine != null) {
-            try {
-                targetLine.stop();
-                targetLine.close();
-            } catch (Exception ignored) {}
+            try { targetLine.stop(); targetLine.close(); } catch (Exception ignored) {}
             targetLine = null;
         }
     }
