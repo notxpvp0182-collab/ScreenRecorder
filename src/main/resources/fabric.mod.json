@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "screen_recorder",
+  "version": "${version}",
+  "name": "Screen Recorder",
+  "description": "A professional in-game Minecraft screen recorder.",
+  "authors": [
+    "Ahmed"
+  ],
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.ahmed.screenrecorder.ScreenRecorderClient"
+    ],
+    "modmenu": [
+      "com.ahmed.screenrecorder.ScreenRecorderModMenu"
+    ]
+  },
+  "mixins": [
+    "screen_recorder.mixins.json"
+  ],
+  "depends": {
+    "minecraft": "1.21.11",
+    "fabricloader": "*",
+    "fabric-api": "*",
+    "modmenu": "*"
+  }
+}
