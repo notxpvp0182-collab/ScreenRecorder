@@ -13,7 +13,7 @@ import org.slf4j.LoggerFactory;
 
 public class ScreenRecorderClient implements ClientModInitializer {
     public static final String MOD_ID = "screen_recorder";
-    public static final Logger LOGGER = LoggerFactory.getLogger("ScreenRecorder");
+    public static final Logger LOGGER = LoggerFactory.getLogger("OBS");
 
     @Override
     public void onInitializeClient() {

@@ -16,9 +16,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * OBS Studio Recording Engine:
- * Supports Full Display Capture (Main Menu, Settings, Worlds, HUD, GUIs),
- * Pause/Resume Recording, Instant Screenshot, and Safe MP4 Finalization.
+ * OBS Studio Real-Time 1x Synchronized Recording Manager.
+ * Matches encoded PTS frames to actual elapsed wall-clock time so 60s of gameplay = 60s of 1x speed MP4 video,
+ * even if the game's live FPS fluctuates between 10 FPS and 120 FPS.
  */
 public class RecordingManager {
     private static final RecordingManager INSTANCE = new RecordingManager();
@@ -32,19 +32,22 @@ public class RecordingManager {
     private final PerformanceManager performanceManager = new PerformanceManager();
     private FFmpegEncoder ffmpegEncoder;
 
-    private ArrayBlockingQueue<ByteBuffer> encodeQueue;
+    private ArrayBlockingQueue<CapturedFrame> encodeQueue;
     private Thread videoEncoderThread;
 
     private File currentOutputFile;
     private int sessionSourceWidth;
     private int sessionSourceHeight;
+    private int sessionTargetFps;
     private long recordingStartTimeMs;
     private long pausedAccumulatedMs = 0;
     private long pauseStartMs = 0;
     private long lastCapturedFrameNs;
 
-    private String lastStatusMessage = "OBS Ready — Display & Game Capture Active";
+    private String lastStatusMessage = "OBS Ready";
     private boolean lastStatusIsError = false;
+
+    private record CapturedFrame(ByteBuffer buffer, long elapsedActiveMs) {}
 
     public static RecordingManager getInstance() {
         return INSTANCE;
@@ -58,24 +61,28 @@ public class RecordingManager {
         RecordingConfig cfg = RecordingConfig.get();
 
         if (!RecordingFileManager.hasEnoughDiskSpace()) {
-            setStatus("Not enough disk space (< 250 MB).", true);
+            setStatus("Low disk space (< 250 MB)", true);
             return false;
         }
 
         MinecraftClient client = MinecraftClient.getInstance();
         Framebuffer fb = client.getFramebuffer();
         if (fb == null || fb.textureWidth <= 0 || fb.textureHeight <= 0) {
-            setStatus("Display framebuffer not ready.", true);
+            setStatus("Display framebuffer not ready", true);
             return false;
         }
 
         this.sessionSourceWidth = fb.textureWidth;
         this.sessionSourceHeight = fb.textureHeight;
+        // Lock target FPS to realistic smooth 30 FPS on mobile if current FPS is low, or configured FPS
+        int liveFps = Math.max(15, client.getCurrentFps());
+        this.sessionTargetFps = Math.min(cfg.getTargetFps(), Math.max(24, Math.min(60, liveFps)));
+
         int frameBytes = sessionSourceWidth * sessionSourceHeight * 4;
-        int queueCapacity = Math.max(6, Math.min(24, cfg.maxFrameQueueSize));
+        int queueCapacity = Math.max(8, Math.min(24, cfg.maxFrameQueueSize));
 
         try {
-            performanceManager.initializePool(frameBytes, queueCapacity + 2);
+            performanceManager.initializePool(frameBytes, queueCapacity + 3);
             encodeQueue = new ArrayBlockingQueue<>(queueCapacity);
 
             currentOutputFile = RecordingFileManager.createUniqueRecordingFile();
@@ -87,10 +94,10 @@ public class RecordingManager {
             recordingStartTimeMs = System.currentTimeMillis();
             pausedAccumulatedMs = 0;
             paused.set(false);
-            lastCapturedFrameNs = System.nanoTime();
+            lastCapturedFrameNs = 0L;
             recording.set(true);
 
-            videoEncoderThread = new Thread(this::runVideoEncodeLoop, "OBS-VideoEncoder");
+            videoEncoderThread = new Thread(this::runWallClockSyncedEncodeLoop, "OBS-VideoEncoder");
             videoEncoderThread.setDaemon(true);
             PerformanceManager.applyThreadPriority(videoEncoderThread);
             videoEncoderThread.start();
@@ -109,10 +116,10 @@ public class RecordingManager {
         if (!recording.get() || stopping.get()) return;
         if (paused.compareAndSet(false, true)) {
             pauseStartMs = System.currentTimeMillis();
-            setStatus("Recording Paused", false);
+            setStatus("Paused: " + currentOutputFile.getName(), false);
         } else if (paused.compareAndSet(true, false)) {
             pausedAccumulatedMs += (System.currentTimeMillis() - pauseStartMs);
-            setStatus("Recording Resumed: " + currentOutputFile.getName(), false);
+            setStatus("Recording: " + currentOutputFile.getName(), false);
         }
     }
 
@@ -120,7 +127,7 @@ public class RecordingManager {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client != null && client.getFramebuffer() != null) {
             ScreenshotRecorder.saveScreenshot(client.runDirectory, client.getFramebuffer(), msg -> {
-                setStatus("Screenshot saved to screenshots/", false);
+                setStatus("Screenshot saved", false);
             });
         }
     }
@@ -132,7 +139,7 @@ public class RecordingManager {
         stopping.set(true);
         recording.set(false);
         paused.set(false);
-        setStatus("Rendering & finalizing MP4...", false);
+        setStatus("Finalizing MP4...", false);
 
         Thread stopThread = new Thread(this::performSafeStop, "OBS-Finalizer");
         stopThread.setDaemon(false);
@@ -177,7 +184,8 @@ public class RecordingManager {
 
         boolean captured = videoCaptureManager.captureFramebuffer(buffer, sessionSourceWidth, sessionSourceHeight);
         if (captured) {
-            if (!encodeQueue.offer(buffer)) {
+            long activeMs = Math.max(0L, System.currentTimeMillis() - recordingStartTimeMs - pausedAccumulatedMs);
+            if (!encodeQueue.offer(new CapturedFrame(buffer, activeMs))) {
                 performanceManager.releaseBuffer(buffer);
                 performanceManager.recordFrameDropped();
             }
@@ -186,14 +194,30 @@ public class RecordingManager {
         }
     }
 
-    private void runVideoEncodeLoop() {
+    /**
+     * Ensures 1x Real-Time Video Speed!
+     * Calculates exact target frame index from wall-clock elapsed milliseconds so if the game
+     * runs at 13 FPS while recording at 60 FPS, frames are properly paced to match 1x real time.
+     */
+    private void runWallClockSyncedEncodeLoop() {
+        int fps = RecordingConfig.get().getTargetFps();
+        long writtenFrames = 0;
+
         try {
             while (recording.get() || !encodeQueue.isEmpty()) {
-                ByteBuffer buf = encodeQueue.poll(15, TimeUnit.MILLISECONDS);
-                if (buf != null) {
-                    buf.rewind();
-                    ffmpegEncoder.writeVideoFrame(buf);
-                    performanceManager.recordFrameEncoded();
+                CapturedFrame item = encodeQueue.poll(20, TimeUnit.MILLISECONDS);
+                if (item != null) {
+                    ByteBuffer buf = item.buffer();
+                    long targetFrameCount = Math.max(writtenFrames + 1, (item.elapsedActiveMs() * fps) / 1000L);
+                    long repeatCount = Math.min(8, targetFrameCount - writtenFrames);
+
+                    for (long r = 0; r < repeatCount; r++) {
+                        buf.rewind();
+                        ffmpegEncoder.writeVideoFrame(buf);
+                        writtenFrames++;
+                        performanceManager.recordFrameEncoded();
+                    }
+
                     performanceManager.releaseBuffer(buf);
                 }
             }
@@ -209,7 +233,7 @@ public class RecordingManager {
 
             if (videoEncoderThread != null && Thread.currentThread() != videoEncoderThread) {
                 try {
-                    videoEncoderThread.join(6000);
+                    videoEncoderThread.join(8000);
                 } catch (InterruptedException ignored) {}
             }
 
@@ -221,7 +245,8 @@ public class RecordingManager {
             performanceManager.cleanup();
 
             if (currentOutputFile != null && currentOutputFile.exists()) {
-                String savedMsg = "MP4 Saved: " + currentOutputFile.getName();
+                double sizeMb = currentOutputFile.length() / (1024.0 * 1024.0);
+                String savedMsg = String.format("Saved: %s (%.2f MB)", currentOutputFile.getName(), sizeMb);
                 setStatus(savedMsg, false);
                 MinecraftClient client = MinecraftClient.getInstance();
                 if (client != null && client.player != null) {

@@ -13,18 +13,49 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Download Official OBS Icon & Native FFmpeg
-        run: |
-          mkdir -p src/main/resources/assets/screen_recorder/bin
-          curl -L -s "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/OBS_Studio_Logo.svg/256px-OBS_Studio_Logo.svg.png" -o src/main/resources/assets/screen_recorder/icon.png || true
-          curl -L -s "https://github.com/AlwaysLivid/ffmpeg-android-arm64-static/releases/latest/download/ffmpeg" -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 || true
-          chmod +x src/main/resources/assets/screen_recorder/bin/* || true
-
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
+
+      - name: Generate Official OBS Studio PNG Icon & Bundle FFmpeg
+        run: |
+          mkdir -p src/main/resources/assets/screen_recorder/bin
+          cat << 'JAVAEOF' > MakeIcon.java
+          import java.awt.*;
+          import java.awt.geom.*;
+          import java.awt.image.BufferedImage;
+          import java.io.File;
+          import javax.imageio.ImageIO;
+          public class MakeIcon {
+              public static void main(String[] args) throws Exception {
+                  int s = 128;
+                  BufferedImage img = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
+                  Graphics2D g = img.createGraphics();
+                  g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                  g.setColor(new Color(24, 26, 32));
+                  g.fill(new Ellipse2D.Double(4, 4, 120, 120));
+                  g.setStroke(new BasicStroke(5f));
+                  g.setColor(new Color(225, 228, 234));
+                  g.draw(new Ellipse2D.Double(6, 6, 116, 116));
+                  g.setColor(Color.WHITE);
+                  for (int i = 0; i < 3; i++) {
+                      AffineTransform old = g.getTransform();
+                      g.rotate(Math.toRadians(i * 120), 64, 64);
+                      g.fill(new Arc2D.Double(28, 18, 56, 56, 20, 135, Arc2D.CHORD));
+                      g.setTransform(old);
+                  }
+                  g.setColor(new Color(24, 26, 32));
+                  g.fill(new Ellipse2D.Double(52, 52, 24, 24));
+                  g.dispose();
+                  ImageIO.write(img, "PNG", new File("src/main/resources/assets/screen_recorder/icon.png"));
+              }
+          }
+          JAVAEOF
+          javac MakeIcon.java && java MakeIcon && rm -f MakeIcon.java MakeIcon.class
+          curl -L -s "https://github.com/AlwaysLivid/ffmpeg-android-arm64-static/releases/latest/download/ffmpeg" -o src/main/resources/assets/screen_recorder/bin/ffmpeg-arm64 || true
+          chmod +x src/main/resources/assets/screen_recorder/bin/* || true
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4

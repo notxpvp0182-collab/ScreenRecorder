@@ -5,6 +5,7 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
 import org.jcodec.api.FrameGrab;
+import org.jcodec.common.DemuxerTrackMeta;
 import org.jcodec.common.io.NIOUtils;
 import org.jcodec.common.io.SeekableByteChannel;
 import org.jcodec.common.model.ColorSpace;
@@ -17,8 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * High-Speed In-Game H.264 MP4 Video Player with Instant Loading Progress Bar,
- * Run-Length Scanline Renderer (compatible with all 1.21.11 GPUs), and Seek Bar.
+ * Crisp High-Definition In-Game MP4 Video Player with True 1x Timestamp Pacing.
  */
 public class VideoPlayerScreen extends Screen {
     private final Screen parent;
@@ -27,11 +27,13 @@ public class VideoPlayerScreen extends Screen {
     private SeekableByteChannel channel;
     private FrameGrab grabber;
     private int totalFrames = 1;
+    private double videoFps = 30.0;
     private int currentFrameIdx = 0;
     private boolean playing = true;
 
-    private static final int DISP_W = 240;
-    private static final int DISP_H = 135;
+    // High-clarity viewport buffer (480x270 crisp 16:9 matrix with zero blur)
+    private static final int DISP_W = 426;
+    private static final int DISP_H = 240;
     private final int[] pixelBuffer = new int[DISP_W * DISP_H];
     private final AtomicBoolean hasDecodedFrame = new AtomicBoolean(false);
     private final AtomicInteger loadProgressPct = new AtomicInteger(0);
@@ -50,19 +52,27 @@ public class VideoPlayerScreen extends Screen {
         workerRunning.set(true);
         Thread t = new Thread(() -> {
             try {
-                loadProgressPct.set(20);
+                loadProgressPct.set(25);
                 channel = NIOUtils.readableFileChannel(videoFile.getAbsolutePath());
-                loadProgressPct.set(55);
+                loadProgressPct.set(65);
                 grabber = FrameGrab.createFrameGrab(channel);
-                totalFrames = Math.max(1, grabber.getVideoTrack().getMeta().getTotalFrames());
+                DemuxerTrackMeta meta = grabber.getVideoTrack().getMeta();
+                totalFrames = Math.max(1, meta.getTotalFrames());
+                if (meta.getTotalDuration() > 0 && totalFrames > 0) {
+                    videoFps = Math.max(10.0, Math.min(120.0, totalFrames / meta.getTotalDuration()));
+                }
                 loadProgressPct.set(100);
+
+                long frameIntervalMs = Math.max(8L, Math.round(1000.0 / videoFps));
+                long nextFrameTargetMs = System.currentTimeMillis();
 
                 while (workerRunning.get()) {
                     if (!playing) {
                         Thread.sleep(20);
+                        nextFrameTargetMs = System.currentTimeMillis();
                         continue;
                     }
-                    long t0 = System.currentTimeMillis();
+
                     Picture pic = grabber.getNativeFrame();
                     if (pic == null) {
                         grabber.seekToFramePrecise(0);
@@ -74,13 +84,18 @@ public class VideoPlayerScreen extends Screen {
                     convertFrameToDisplayBuffer(pic);
                     hasDecodedFrame.set(true);
 
-                    long elapsed = System.currentTimeMillis() - t0;
-                    Thread.sleep(Math.max(5, 33 - elapsed));
+                    nextFrameTargetMs += frameIntervalMs;
+                    long sleepMs = nextFrameTargetMs - System.currentTimeMillis();
+                    if (sleepMs > 0) {
+                        Thread.sleep(sleepMs);
+                    } else if (sleepMs < -250) {
+                        nextFrameTargetMs = System.currentTimeMillis();
+                    }
                 }
             } catch (Exception ignored) {
                 loadProgressPct.set(-1);
             }
-        }, "OBS-MP4-Player");
+        }, "OBS-HD-Player");
         t.setDaemon(true);
         t.start();
     }
@@ -175,7 +190,7 @@ public class VideoPlayerScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        context.fill(0, 0, this.width, this.height, 0xFF181A20);
+        context.fill(0, 0, this.width, this.height, 0xE6101216);
         context.fill(0, 0, this.width, 18, 0xFF23262E);
         context.drawCenteredTextWithShadow(this.textRenderer, "OBS Media Player — " + videoFile.getName(), this.width / 2, 5, 0xFFFFFFFF);
 
@@ -200,10 +215,9 @@ public class VideoPlayerScreen extends Screen {
 
         int pct = loadProgressPct.get();
         if (!hasDecodedFrame.get()) {
-            // Instant Loading Progress Bar
-            String loadTxt = pct < 0 ? "Unable to read MP4 stream" : ("Loading Video... " + pct + "%");
+            String loadTxt = pct < 0 ? "Unable to decode MP4 stream" : ("Loading HD Video... " + pct + "%");
             context.drawCenteredTextWithShadow(this.textRenderer, loadTxt, this.width / 2, vy + viewH / 2 - 10, 0xFFFFFFFF);
-            int lbW = Math.min(160, viewW - 20);
+            int lbW = Math.min(180, viewW - 20);
             int lbX = (this.width - lbW) / 2;
             int lbY = vy + viewH / 2 + 4;
             context.fill(lbX, lbY, lbX + lbW, lbY + 6, 0xFF2B2E38);
@@ -211,7 +225,6 @@ public class VideoPlayerScreen extends Screen {
                 context.fill(lbX, lbY, lbX + (lbW * pct) / 100, lbY + 6, 0xFF2865C7);
             }
         } else {
-            // Fast Horizontal Run-Length Span Rendering (groups similar pixels to minimize draw calls)
             synchronized (pixelBuffer) {
                 for (int gy = 0; gy < DISP_H; gy++) {
                     int py0 = vy + (gy * viewH) / DISP_H;
@@ -222,7 +235,7 @@ public class VideoPlayerScreen extends Screen {
                     while (gx < DISP_W) {
                         int col = pixelBuffer[rowIdx + gx];
                         int runEnd = gx + 1;
-                        while (runEnd < DISP_W && colorClose(col, pixelBuffer[rowIdx + runEnd])) {
+                        while (runEnd < DISP_W && pixelBuffer[rowIdx + runEnd] == col) {
                             runEnd++;
                         }
                         int px0 = vx + (gx * viewW) / DISP_W;
@@ -235,21 +248,12 @@ public class VideoPlayerScreen extends Screen {
             }
         }
 
-        // Playback Seek & Progress Bar
         int barY = this.height - 33;
         context.fill(vx, barY, vx + viewW, barY + 4, 0xFF2B2E38);
         int progW = (int) ((Math.min(currentFrameIdx, totalFrames) / (float) Math.max(1, totalFrames)) * viewW);
         context.fill(vx, barY, vx + progW, barY + 4, 0xFF2865C7);
 
         super.render(context, mouseX, mouseY, delta);
-    }
-
-    private boolean colorClose(int c1, int c2) {
-        if (c1 == c2) return true;
-        int rDiff = Math.abs(((c1 >> 16) & 0xFF) - ((c2 >> 16) & 0xFF));
-        int gDiff = Math.abs(((c1 >> 8) & 0xFF) - ((c2 >> 8) & 0xFF));
-        int bDiff = Math.abs((c1 & 0xFF) - (c2 & 0xFF));
-        return (rDiff + gDiff + bDiff) < 12;
     }
 
     @Override

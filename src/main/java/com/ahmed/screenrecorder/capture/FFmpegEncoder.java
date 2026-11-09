@@ -85,7 +85,7 @@ public class FFmpegEncoder {
         // Built-in H.264 SequenceEncoder (100% compatible across all Android/PC devices)
         int targetW = Math.min(sourceWidth, cfg.getTargetWidth());
         int targetH = Math.min(sourceHeight, cfg.getTargetHeight());
-        if (targetW > 1280) {
+        if (targetW > 3840) {
             targetH = (targetH * 1280) / targetW;
             targetW = 1280;
         }
